@@ -118,6 +118,10 @@ class NmapToolViewModel(
         _message.value = null
     }
 
+    fun publishMessage(value: String) {
+        _message.value = value
+    }
+
     fun updateName(value: String) = updateBuilder { it.copy(name = value) }
 
     fun updateTool(value: ToolType) = updateBuilder { state ->

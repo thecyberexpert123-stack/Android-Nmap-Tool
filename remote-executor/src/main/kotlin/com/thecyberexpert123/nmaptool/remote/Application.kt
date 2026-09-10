@@ -29,13 +29,17 @@ import io.ktor.server.routing.routing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -53,7 +57,8 @@ fun Application.nmapExecutorModule(config: ExecutorConfig) {
         ignoreUnknownKeys = true
         prettyPrint = false
     }
-    val executionEngine = RemoteExecutionEngine(config)
+    val auditLogger = ExecutorAuditLogger(config.auditLogPath, json)
+    val executionEngine = RemoteExecutionEngine(config, auditLogger)
 
     install(ContentNegotiation) {
         json(json)
@@ -73,32 +78,63 @@ fun Application.nmapExecutorModule(config: ExecutorConfig) {
         }
 
         get("/api/v1/capabilities") {
+            val requestId = UUID.randomUUID().toString()
             authorize(call.request.headers[HttpHeaders.Authorization], config)
                 ?.let { message ->
-                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse(message))
+                    auditLogger.append(
+                        requestId = requestId,
+                        eventType = "capabilities_unauthorized",
+                        fields = mapOf("message" to message),
+                    )
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse(message, requestId = requestId))
                     return@get
                 }
+            auditLogger.append(requestId = requestId, eventType = "capabilities_ok")
             call.respond(executionEngine.capabilities())
         }
 
         post("/api/v1/execute") {
+            val requestId = UUID.randomUUID().toString()
             authorize(call.request.headers[HttpHeaders.Authorization], config)
                 ?.let { message ->
-                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse(message))
+                    auditLogger.append(
+                        requestId = requestId,
+                        eventType = "execute_unauthorized",
+                        fields = mapOf("message" to message),
+                    )
+                    call.respond(HttpStatusCode.Unauthorized, ApiErrorResponse(message, requestId = requestId))
                     return@post
                 }
 
             val request = call.receive<ToolInvocationRequest>()
             val issues = validate(request, config)
             if (issues.isNotEmpty()) {
+                val message = issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
+                auditLogger.append(
+                    requestId = requestId,
+                    eventType = "execute_validation_failed",
+                    fields = mapOf(
+                        "tool" to request.tool.name,
+                        "message" to message,
+                        "requestedBy" to request.requestedBy.name,
+                    ),
+                )
                 call.respond(
                     HttpStatusCode.BadRequest,
-                    ApiErrorResponse(message = issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }),
+                    ApiErrorResponse(message = message, requestId = requestId),
                 )
                 return@post
             }
 
-            call.respond(executionEngine.execute(request))
+            val response = executionEngine.execute(requestId, request)
+            if (response.status == RunStatus.BLOCKED && response.message.contains("maximum concurrent", ignoreCase = true)) {
+                call.respond(
+                    HttpStatusCode.TooManyRequests,
+                    ApiErrorResponse(message = response.message, requestId = response.requestId),
+                )
+            } else {
+                call.respond(response)
+            }
         }
     }
 }
@@ -146,6 +182,8 @@ data class ExecutorConfig(
     val executionTimeoutSeconds: Long,
     val maxOutputBytes: Int,
     val allowedTargetRegexes: List<Regex>,
+    val maxConcurrentExecutions: Int,
+    val auditLogPath: String?,
 ) {
     fun binaryFor(tool: ToolType): String = when (tool) {
         ToolType.NMAP -> nmapBinary
@@ -177,13 +215,100 @@ data class ExecutorConfig(
             executionTimeoutSeconds = System.getenv("EXECUTION_TIMEOUT_SECONDS")?.toLongOrNull() ?: 900L,
             maxOutputBytes = System.getenv("MAX_OUTPUT_BYTES")?.toIntOrNull()?.coerceAtLeast(16_384) ?: 262_144,
             allowedTargetRegexes = parseRegexList(System.getenv("ALLOWED_TARGET_REGEXES").orEmpty()),
+            maxConcurrentExecutions = System.getenv("MAX_CONCURRENT_EXECUTIONS")
+                ?.toIntOrNull()
+                ?.coerceIn(1, 64)
+                ?: 2,
+            auditLogPath = System.getenv("AUDIT_LOG_PATH")
+                ?.trim()
+                ?.takeIf(String::isNotBlank),
         )
+    }
+}
+
+class ExecutorAuditLogger(
+    auditLogPath: String?,
+    private val json: Json,
+) {
+    private val lock = Any()
+    private val auditPath: Path? = auditLogPath?.let(Path::of)
+
+    fun append(
+        requestId: String,
+        eventType: String,
+        fields: Map<String, String?> = emptyMap(),
+    ) {
+        val path = auditPath ?: return
+        runCatching {
+            val payload = json.encodeToString(
+                kotlinx.serialization.json.JsonObject.serializer(),
+                buildJsonObject {
+                    put("timestamp", System.currentTimeMillis())
+                    put("requestId", requestId)
+                    put("eventType", eventType)
+                    fields.forEach { (key, value) ->
+                        value?.let { put(key, it) }
+                    }
+                },
+            )
+            writeLine(path, payload)
+        }
+    }
+
+    fun appendExecutionEvent(
+        requestId: String,
+        request: ToolInvocationRequest,
+        response: ToolInvocationResponse,
+    ) {
+        val path = auditPath ?: return
+        runCatching {
+            val payload = json.encodeToString(
+                kotlinx.serialization.json.JsonObject.serializer(),
+                buildJsonObject {
+                    put("timestamp", System.currentTimeMillis())
+                    put("requestId", requestId)
+                    put("eventType", "execution_finished")
+                    put("executorLabel", response.executorLabel ?: "")
+                    put("tool", request.tool.name)
+                    put("executionPreference", request.executionPreference.name)
+                    put("requestedBy", request.requestedBy.name)
+                    put("targetCount", request.targets.size)
+                    put("argumentCount", request.arguments.size)
+                    put("route", response.route.name)
+                    put("status", response.status.name)
+                    put("exitCode", response.exitCode?.toString() ?: "")
+                    put("durationMillis", (response.finishedAtEpochMillis - response.startedAtEpochMillis).coerceAtLeast(0L).toString())
+                    put("stdoutTruncated", response.stdoutTruncated.toString())
+                    put("stderrTruncated", response.stderrTruncated.toString())
+                    put("nmapXmlOutputTruncated", response.nmapXmlOutputTruncated.toString())
+                    put("message", response.message.take(500))
+                },
+            )
+            writeLine(path, payload)
+        }
+    }
+
+    private fun writeLine(path: Path, payload: String) {
+        synchronized(lock) {
+            path.parent?.let(Files::createDirectories)
+            Files.writeString(
+                path,
+                payload + System.lineSeparator(),
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.APPEND,
+            )
+        }
     }
 }
 
 class RemoteExecutionEngine(
     private val config: ExecutorConfig,
+    private val auditLogger: ExecutorAuditLogger,
 ) {
+    private val executionSemaphore = Semaphore(config.maxConcurrentExecutions)
+
     fun capabilities(): RemoteCapabilitiesResponse {
         val nmapAvailable = isExecutableAvailable(config.nmapBinary)
         val ncatAvailable = isExecutableAvailable(config.ncatBinary)
@@ -209,15 +334,33 @@ class RemoteExecutionEngine(
             nmapVersion = if (nmapAvailable) detectToolVersion(config.nmapBinary, listOf("--version")) else null,
             ncatVersion = if (ncatAvailable) detectToolVersion(config.ncatBinary, listOf("--version")) else null,
             npingVersion = if (npingAvailable) detectToolVersion(config.npingBinary, listOf("--version")) else null,
+            auditLoggingEnabled = config.auditLogPath != null,
+            maxConcurrentExecutions = config.maxConcurrentExecutions,
         )
     }
 
-    suspend fun execute(request: ToolInvocationRequest): ToolInvocationResponse = withContext(Dispatchers.IO) {
-        val requestId = UUID.randomUUID().toString()
+    suspend fun execute(requestId: String, request: ToolInvocationRequest): ToolInvocationResponse = withContext(Dispatchers.IO) {
         val startedAt = System.currentTimeMillis()
+        if (!executionSemaphore.tryAcquire()) {
+            val response = ToolInvocationResponse(
+                route = ExecutionRoute.BLOCKED,
+                status = RunStatus.BLOCKED,
+                commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
+                stdout = "",
+                stderr = "",
+                startedAtEpochMillis = startedAt,
+                finishedAtEpochMillis = System.currentTimeMillis(),
+                message = "Remote executor is at maximum concurrent execution capacity. Retry later.",
+                requestId = requestId,
+                executorLabel = config.executorLabel,
+            )
+            auditLogger.appendExecutionEvent(requestId, request, response)
+            return@withContext response
+        }
+
         val binary = config.binaryFor(request.tool)
         if (!isExecutableAvailable(binary)) {
-            return@withContext ToolInvocationResponse(
+            val response = ToolInvocationResponse(
                 route = ExecutionRoute.REMOTE,
                 status = RunStatus.FAILED,
                 commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
@@ -229,92 +372,114 @@ class RemoteExecutionEngine(
                 requestId = requestId,
                 executorLabel = config.executorLabel,
             )
-        }
-
-        val structuredFiles = if (request.tool == ToolType.NMAP) {
-            StructuredOutputFiles(
-                normalOutputFile = Files.createTempFile("android-nmap-tool-", ".nmap"),
-                xmlOutputFile = Files.createTempFile("android-nmap-tool-", ".xml"),
-            )
-        } else {
-            null
+            auditLogger.appendExecutionEvent(requestId, request, response)
+            executionSemaphore.release()
+            return@withContext response
         }
 
         try {
-            val command = buildList {
-                add(binary)
-                addAll(request.arguments)
-                structuredFiles?.let { files ->
-                    add("-oN")
-                    add(files.normalOutputFile.toString())
-                    add("-oX")
-                    add(files.xmlOutputFile.toString())
-                }
-                addAll(request.targets)
-            }
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(false)
-                .start()
-
-            val result = coroutineScope {
-                val stdoutDeferred = async { readCappedText(process.inputStream, config.maxOutputBytes) }
-                val stderrDeferred = async { readCappedText(process.errorStream, config.maxOutputBytes) }
-                val finishedInTime = process.waitFor(config.executionTimeoutSeconds, TimeUnit.SECONDS)
-                if (!finishedInTime) {
-                    process.destroyForcibly()
-                }
-                val stdoutCapture = stdoutDeferred.await()
-                val stderrCapture = stderrDeferred.await()
-                val normalOutputCapture = structuredFiles?.normalOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
-                val xmlOutputCapture = structuredFiles?.xmlOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
-                ExecutionResult(
-                    exitCode = if (finishedInTime) process.exitValue() else null,
-                    stdout = normalOutputCapture?.asDisplayText(streamName = "nmap-normal-output")
-                        ?: stdoutCapture.asDisplayText(streamName = "stdout"),
-                    stderr = buildString {
-                        append(stderrCapture.asDisplayText(streamName = "stderr"))
-                        if (xmlOutputCapture?.truncated == true) {
-                            if (isNotEmpty()) append('\n')
-                            append("Structured Nmap XML output exceeded the capture limit and was omitted from the API response.")
-                        }
-                        if (!finishedInTime) {
-                            if (isNotEmpty()) append('\n')
-                            append("Execution timed out after ${config.executionTimeoutSeconds} seconds.")
-                        }
-                    },
-                    nmapXmlOutput = xmlOutputCapture
-                        ?.takeUnless { it.truncated }
-                        ?.content
-                        ?.takeIf(String::isNotBlank),
-                    stdoutTruncated = normalOutputCapture?.truncated ?: stdoutCapture.truncated,
-                    stderrTruncated = stderrCapture.truncated,
-                    nmapXmlOutputTruncated = xmlOutputCapture?.truncated == true,
+            val structuredFiles = if (request.tool == ToolType.NMAP) {
+                StructuredOutputFiles(
+                    normalOutputFile = Files.createTempFile("android-nmap-tool-", ".nmap"),
+                    xmlOutputFile = Files.createTempFile("android-nmap-tool-", ".xml"),
                 )
+            } else {
+                null
             }
 
-            ToolInvocationResponse(
-                route = ExecutionRoute.REMOTE,
-                status = if (result.exitCode == 0) RunStatus.SUCCEEDED else RunStatus.FAILED,
-                commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
-                exitCode = result.exitCode,
-                stdout = result.stdout,
-                stderr = result.stderr,
-                startedAtEpochMillis = startedAt,
-                finishedAtEpochMillis = System.currentTimeMillis(),
-                message = when {
-                    result.exitCode == null -> "Execution exceeded the configured timeout."
-                    result.exitCode == 0 -> "Remote execution completed successfully."
-                    else -> "Remote execution finished with a non-zero exit code."
-                },
-                nmapXmlOutput = result.nmapXmlOutput,
-                stdoutTruncated = result.stdoutTruncated,
-                stderrTruncated = result.stderrTruncated,
-                nmapXmlOutputTruncated = result.nmapXmlOutputTruncated,
-                requestId = requestId,
-                executorLabel = config.executorLabel,
-            )
+            val response = try {
+                val command = buildList {
+                    add(binary)
+                    addAll(request.arguments)
+                    structuredFiles?.let { files ->
+                        add("-oN")
+                        add(files.normalOutputFile.toString())
+                        add("-oX")
+                        add(files.xmlOutputFile.toString())
+                    }
+                    addAll(request.targets)
+                }
+                val process = ProcessBuilder(command)
+                    .redirectErrorStream(false)
+                    .start()
+
+                val result = coroutineScope {
+                    val stdoutDeferred = async { readCappedText(process.inputStream, config.maxOutputBytes) }
+                    val stderrDeferred = async { readCappedText(process.errorStream, config.maxOutputBytes) }
+                    val finishedInTime = process.waitFor(config.executionTimeoutSeconds, TimeUnit.SECONDS)
+                    if (!finishedInTime) {
+                        process.destroyForcibly()
+                    }
+                    val stdoutCapture = stdoutDeferred.await()
+                    val stderrCapture = stderrDeferred.await()
+                    val normalOutputCapture = structuredFiles?.normalOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
+                    val xmlOutputCapture = structuredFiles?.xmlOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
+                    ExecutionResult(
+                        exitCode = if (finishedInTime) process.exitValue() else null,
+                        stdout = normalOutputCapture?.asDisplayText(streamName = "nmap-normal-output")
+                            ?: stdoutCapture.asDisplayText(streamName = "stdout"),
+                        stderr = buildString {
+                            append(stderrCapture.asDisplayText(streamName = "stderr"))
+                            if (xmlOutputCapture?.truncated == true) {
+                                if (isNotEmpty()) append('\n')
+                                append("Structured Nmap XML output exceeded the capture limit and was omitted from the API response.")
+                            }
+                            if (!finishedInTime) {
+                                if (isNotEmpty()) append('\n')
+                                append("Execution timed out after ${config.executionTimeoutSeconds} seconds.")
+                            }
+                        },
+                        nmapXmlOutput = xmlOutputCapture
+                            ?.takeUnless { it.truncated }
+                            ?.content
+                            ?.takeIf(String::isNotBlank),
+                        stdoutTruncated = normalOutputCapture?.truncated ?: stdoutCapture.truncated,
+                        stderrTruncated = stderrCapture.truncated,
+                        nmapXmlOutputTruncated = xmlOutputCapture?.truncated == true,
+                    )
+                }
+
+                ToolInvocationResponse(
+                    route = ExecutionRoute.REMOTE,
+                    status = if (result.exitCode == 0) RunStatus.SUCCEEDED else RunStatus.FAILED,
+                    commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
+                    exitCode = result.exitCode,
+                    stdout = result.stdout,
+                    stderr = result.stderr,
+                    startedAtEpochMillis = startedAt,
+                    finishedAtEpochMillis = System.currentTimeMillis(),
+                    message = when {
+                        result.exitCode == null -> "Execution exceeded the configured timeout."
+                        result.exitCode == 0 -> "Remote execution completed successfully."
+                        else -> "Remote execution finished with a non-zero exit code."
+                    },
+                    nmapXmlOutput = result.nmapXmlOutput,
+                    stdoutTruncated = result.stdoutTruncated,
+                    stderrTruncated = result.stderrTruncated,
+                    nmapXmlOutputTruncated = result.nmapXmlOutputTruncated,
+                    requestId = requestId,
+                    executorLabel = config.executorLabel,
+                )
+            } catch (error: Throwable) {
+                ToolInvocationResponse(
+                    route = ExecutionRoute.REMOTE,
+                    status = RunStatus.FAILED,
+                    commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
+                    stdout = "",
+                    stderr = error.message.orEmpty(),
+                    startedAtEpochMillis = startedAt,
+                    finishedAtEpochMillis = System.currentTimeMillis(),
+                    message = "Remote execution failed before completion.",
+                    requestId = requestId,
+                    executorLabel = config.executorLabel,
+                )
+            } finally {
+                structuredFiles?.deleteQuietly()
+            }
+            auditLogger.appendExecutionEvent(requestId, request, response)
+            response
         } finally {
-            structuredFiles?.deleteQuietly()
+            executionSemaphore.release()
         }
     }
 

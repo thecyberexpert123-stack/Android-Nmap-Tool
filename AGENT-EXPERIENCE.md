@@ -108,6 +108,8 @@ This document records development observations, constraints, trade-offs, and lea
 - Static source review still matters when the sandbox cannot compile: in this pass, manual inspection exposed a duplicate `CommandPreview` object in the shared module that honest runtime-free verification had not previously surfaced.
 - Capability reports are easy to over-trust unless the product tracks freshness. Marking them stale after settings edits is a small UX detail that materially improves operational honesty.
 - Pre-run execution guidance is worth centralizing in shared logic rather than scattering ad-hoc warnings through Compose, because route assumptions and privilege caveats are domain rules, not just UI copy.
+- Once report generation becomes operationally useful, clipboard-only export is not enough. Adding SAF/file-share paths keeps the app aligned with real Android operator workflows without pretending desktop-style unrestricted filesystem access exists.
+- Request IDs only become genuinely useful when they appear on both success and failure paths. Propagating them into API error responses and optional backend audit logs closes that observability gap.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

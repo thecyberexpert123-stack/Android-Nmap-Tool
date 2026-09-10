@@ -1,5 +1,8 @@
 package com.thecyberexpert123.androidnmap.ui
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +57,7 @@ import com.thecyberexpert123.androidnmap.data.AutomationScheduleSummary
 import com.thecyberexpert123.androidnmap.data.RunChangeKind
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
+import com.thecyberexpert123.androidnmap.reporting.ReportFileManager
 import com.thecyberexpert123.androidnmap.reporting.buildExecutionReport
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
@@ -179,7 +184,11 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 paddingValues = innerPadding,
             )
 
-            AppTab.HISTORY -> HistoryScreen(runs = runs, paddingValues = innerPadding)
+            AppTab.HISTORY -> HistoryScreen(
+                runs = runs,
+                onMessage = viewModel::publishMessage,
+                paddingValues = innerPadding,
+            )
             AppTab.AUTOMATION -> AutomationScreen(
                 schedules = schedules,
                 onEditProfile = {
@@ -669,12 +678,16 @@ private fun ExecutionGuidanceCard(
 @Composable
 private fun HistoryScreen(
     runs: List<ScanRunSummary>,
+    onMessage: (String) -> Unit,
     paddingValues: PaddingValues,
 ) {
+    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     var selectedFormatIndex by rememberSaveable { mutableIntStateOf(ReportExportFormat.MARKDOWN.ordinal) }
     var selectedFilterIndex by rememberSaveable { mutableIntStateOf(HistoryReportFilter.ALL.ordinal) }
     var selectedWindowIndex by rememberSaveable { mutableIntStateOf(1) }
+    var pendingExportContent by remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    var pendingExportFileName by remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
 
     val selectedFormat = ReportExportFormat.entries[selectedFormatIndex]
     val selectedFilter = HistoryReportFilter.entries[selectedFilterIndex]
@@ -696,8 +709,31 @@ private fun HistoryScreen(
         toolFilter = selectedFilter.tool,
         failuresOnly = selectedFilter.failuresOnly,
     )
+    val suggestedFileName = ReportFileManager.buildSuggestedFileName(
+        format = selectedFormat,
+        filterLabel = selectedFilter.label,
+        maxRuns = selectedWindow,
+    )
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*"),
+    ) { destinationUri ->
+        val reportContent = pendingExportContent
+        val fileName = pendingExportFileName
+        pendingExportContent = null
+        pendingExportFileName = null
+        if (destinationUri == null || reportContent == null || fileName == null) {
+            return@rememberLauncherForActivityResult
+        }
+        runCatching {
+            ReportFileManager.writeReportToUri(context, destinationUri, reportContent)
+        }.onSuccess {
+            onMessage("Report exported as $fileName.")
+        }.onFailure { error ->
+            onMessage(error.message ?: "Failed to export the report file.")
+        }
+    }
     val previewText = reportText.take(4_500).let { prefix ->
-        if (prefix.length == reportText.length) prefix else "$prefix\n…[preview truncated; copy export for full report]"
+        if (prefix.length == reportText.length) prefix else "$prefix\n…[preview truncated; export or share for the full report]"
     }
 
     LazyColumn(
@@ -766,11 +802,52 @@ private fun HistoryScreen(
                         text = "Filtered runs included: ${filteredRuns.size}",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(onClick = { clipboardManager.setText(AnnotatedString(reportText)) }) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Button(onClick = {
+                            clipboardManager.setText(AnnotatedString(reportText))
+                            onMessage("Report copied to clipboard.")
+                        }) {
                             Text("Copy report")
                         }
+                        Button(
+                            onClick = {
+                                pendingExportContent = reportText
+                                pendingExportFileName = suggestedFileName
+                                exportLauncher.launch(suggestedFileName)
+                            },
+                        ) {
+                            Text("Export file")
+                        }
+                        Button(
+                            onClick = {
+                                runCatching {
+                                    val shareIntent = ReportFileManager.createShareIntent(
+                                        context = context,
+                                        format = selectedFormat,
+                                        fileName = suggestedFileName,
+                                        content = reportText,
+                                    )
+                                    context.startActivity(
+                                        Intent.createChooser(shareIntent, "Share execution report").apply {
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        },
+                                    )
+                                    onMessage("Share sheet opened for $suggestedFileName.")
+                                }.onFailure { error ->
+                                    onMessage(error.message ?: "Failed to prepare a shareable report file.")
+                                }
+                            },
+                        ) {
+                            Text("Share report")
+                        }
                     }
+                    Text(
+                        text = "Suggested filename: $suggestedFileName",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     PreviewCard(title = "Report preview", body = previewText)
                 }
             }
@@ -904,6 +981,8 @@ private fun SettingsScreen(
                     Text(text = "max targets per request: ${capabilities.maxTargetsPerRequest}")
                     Text(text = "max arguments per request: ${capabilities.maxArgumentsPerRequest}")
                     Text(text = "captured output limit: ${capabilities.outputCaptureLimitBytes} bytes")
+                    Text(text = "max concurrent executions: ${capabilities.maxConcurrentExecutions}")
+                    Text(text = "audit logging enabled: ${capabilities.auditLoggingEnabled}")
                     Text(text = "target policy: ${capabilities.targetPolicySummary}")
                     Text(text = "structured Nmap XML support: ${capabilities.supportsStructuredNmapXml}")
                     Text(text = capabilities.advisory)

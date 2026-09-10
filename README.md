@@ -120,6 +120,7 @@ This project chooses correctness over false claims:
 - Profile and automation views now surface saved schedule cadence and the most recent run outcome for faster operator triage.
 - Run history now surfaces parse provenance, execution duration, observed-host counts, explicit capture-truncation warnings, and remote request/executor identifiers when available.
 - History now includes built-in **report export generation** with Markdown and CSV outputs derived from saved run history.
+- History can now export reports to a user-selected document destination and prepare shareable report files through Android's document/share flows.
 - Builder guidance now warns when the current profile is likely to depend on remote execution, stale capability data, unavailable tool binaries, or privilege-sensitive scan modes.
 
 ### Explicit current limitation
@@ -144,6 +145,8 @@ This project chooses correctness over false claims:
   - ncat command execution modes
 - for `nmap` requests, the executor can capture **normal output plus structured XML output** using executor-managed temporary files for programmatic parsing
 - returns explicit truncation metadata for stdout, stderr, and structured XML captures so the Android client can warn about incomplete results
+- can enforce an executor-side concurrency ceiling to reduce host overload
+- can append lightweight JSONL audit events with request IDs, execution outcome, and truncation metadata
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
 - optional target-scope restriction via `ALLOWED_TARGET_REGEXES`
 - bounded output capture via `MAX_OUTPUT_BYTES`
@@ -161,6 +164,8 @@ This project chooses correctness over false claims:
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
 | `EXECUTION_TIMEOUT_SECONDS` | Maximum runtime per request | `900` |
 | `MAX_OUTPUT_BYTES` | Per-stream capture limit for stdout/stderr and executor-managed Nmap output files | `262144` |
+| `MAX_CONCURRENT_EXECUTIONS` | Maximum simultaneous in-flight executions allowed by the remote executor | `2` |
+| `AUDIT_LOG_PATH` | Optional JSONL audit log destination for request/execution events | unset |
 | `ALLOWED_TARGET_REGEXES` | Optional semicolon-separated regex allowlist for targets | unset |
 
 ## Build requirements
@@ -190,6 +195,9 @@ Example secured run:
 
 ```bash
 export NMAP_EXECUTOR_TOKEN="replace-me"
+export EXECUTOR_LABEL="lab-east-1"
+export MAX_CONCURRENT_EXECUTIONS="2"
+export AUDIT_LOG_PATH="./logs/executor-audit.jsonl"
 export NMAP_BINARY="nmap"
 export NCAT_BINARY="ncat"
 export NPING_BINARY="nping"
@@ -213,7 +221,7 @@ export NPING_BINARY="nping"
 7. Save the profile and run it manually or let automation trigger it.
 8. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
 9. Inspect status, logs, parsed findings, run-to-run deltas, and request/executor audit metadata in **History**.
-10. Generate a Markdown or CSV report preview from saved history and copy it for downstream sharing.
+10. Generate a Markdown or CSV report preview from saved history, then copy it, export it to a document destination, or share it through Android's share sheet.
 
 ## Result summaries
 
@@ -240,7 +248,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 - XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
 - The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
 - Builder execution guidance is advisory. It improves honesty before execution, but it cannot prove that a given remote host, network path, or privilege-sensitive scan mode will succeed in every environment.
-- Exported Markdown/CSV reports reflect only the runs saved in local history; they are reporting artifacts, not a substitute for build/runtime verification or full raw upstream output retention.
+- Exported Markdown/CSV reports and SAF/share artifacts reflect only the runs saved in local history; they are reporting artifacts, not a substitute for build/runtime verification or full raw upstream output retention.
 - Non-Nmap tool summaries and fallback text parsing remain **heuristic**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
@@ -260,8 +268,8 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 1. Local native execution integration strategy
    - bundled binaries, user-provided binaries, or companion runtime
 2. richer Nmap result modeling using structured output formats where feasible
-3. report sharing beyond clipboard/export preview, such as SAF-backed file export or share intents
-4. optional authenticated multi-user remote executor governance
+3. optional authenticated multi-user remote executor governance beyond the current single-token deployment model
+4. deeper remote executor observability such as richer backend metrics/retention controls around audit logs
 5. local-vs-remote capability detection and policy UX refinement
 
 ## Verification status

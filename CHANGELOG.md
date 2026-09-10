@@ -82,6 +82,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Added builder UI guidance cards that surface likely route, blockers, warnings, notes, and capability-check freshness before launch.
 - Added capability-state staleness tracking when remote settings are edited after a refresh.
 - Added shared test coverage for execution-guidance decisions.
+- Added Android report export actions for copy, SAF-backed document export, and share-sheet delivery via `FileProvider`.
+- Added remote executor governance controls for optional JSONL audit logging and configurable max-concurrency protection.
+- Added request IDs to API error responses so Android-side operator messages can correlate failures with backend audit entries.
+- Expanded remote capability reporting to include audit-logging state and max-concurrency configuration.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

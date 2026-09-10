@@ -88,15 +88,29 @@ class RemoteExecutorClient(
                 body = json.encodeToString(ToolInvocationRequest.serializer(), request),
             )
             if (response.code !in 200..299) {
+                val errorDetails = decodeApiError(response.body, response.code)
                 return@withContext ToolInvocationResponse(
-                    route = ExecutionRoute.REMOTE,
-                    status = RunStatus.FAILED,
+                    route = if (response.code == HttpURLConnection.HTTP_UNAVAILABLE || response.code == 429) {
+                        ExecutionRoute.BLOCKED
+                    } else {
+                        ExecutionRoute.REMOTE
+                    },
+                    status = if (response.code == HttpURLConnection.HTTP_UNAVAILABLE || response.code == 429) {
+                        RunStatus.BLOCKED
+                    } else {
+                        RunStatus.FAILED
+                    },
                     commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
                     stdout = "",
-                    stderr = extractErrorMessage(response.body, response.code),
+                    stderr = errorDetails.message,
                     startedAtEpochMillis = startedAt,
                     finishedAtEpochMillis = System.currentTimeMillis(),
-                    message = "Remote executor rejected the request.",
+                    message = if (response.code == HttpURLConnection.HTTP_UNAVAILABLE || response.code == 429) {
+                        "Remote executor could not accept the run right now."
+                    } else {
+                        "Remote executor rejected the request."
+                    },
+                    requestId = errorDetails.requestId,
                 )
             }
             json.decodeFromString(ToolInvocationResponse.serializer(), response.body)
@@ -165,21 +179,38 @@ class RemoteExecutorClient(
         return candidate
     }
 
-    private fun extractErrorMessage(body: String, code: Int): String =
+    private fun extractErrorMessage(body: String, code: Int): String = decodeApiError(body, code).message
+
+    private fun decodeApiError(body: String, code: Int): DecodedApiError =
         try {
             val apiError = json.decodeFromString(ApiErrorResponse.serializer(), body)
-            "HTTP $code: ${apiError.message}"
+            DecodedApiError(
+                message = buildString {
+                    append("HTTP $code: ${apiError.message}")
+                    apiError.requestId?.takeIf(String::isNotBlank)?.let { requestId ->
+                        append(" (request $requestId)")
+                    }
+                },
+                requestId = apiError.requestId,
+            )
         } catch (_: SerializationException) {
-            if (body.isBlank()) {
-                "HTTP $code: no error body returned by remote executor."
-            } else {
-                "HTTP $code: $body"
-            }
+            DecodedApiError(
+                message = if (body.isBlank()) {
+                    "HTTP $code: no error body returned by remote executor."
+                } else {
+                    "HTTP $code: $body"
+                },
+            )
         }
 
     private data class RawResponse(
         val code: Int,
         val body: String,
+    )
+
+    private data class DecodedApiError(
+        val message: String,
+        val requestId: String? = null,
     )
 }
 

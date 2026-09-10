@@ -94,11 +94,14 @@ data class RemoteCapabilitiesResponse(
     val nmapVersion: String? = null,
     val ncatVersion: String? = null,
     val npingVersion: String? = null,
+    val auditLoggingEnabled: Boolean = false,
+    val maxConcurrentExecutions: Int = 1,
 )
 
 @Serializable
 data class ApiErrorResponse(
     val message: String,
+    val requestId: String? = null,
 )
 
 data class ValidationIssue(
