@@ -1,8 +1,8 @@
 package com.thecyberexpert123.androidnmap.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.align
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.weight
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -49,9 +48,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thecyberexpert123.androidnmap.data.AutomationScheduleSummary
+import com.thecyberexpert123.androidnmap.data.RunChangeKind
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
+import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import java.text.DateFormat
@@ -131,7 +132,6 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 state = builderState,
                 onNameChanged = viewModel::updateName,
                 onTargetsChanged = viewModel::updateTargets,
-                onArgumentsChanged = viewModel::updateArguments,
                 onNotesChanged = viewModel::updateNotes,
                 onToolSelected = viewModel::updateTool,
                 onPreferenceSelected = viewModel::updateExecutionPreference,
@@ -142,14 +142,20 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 onSaveProfile = viewModel::saveProfile,
                 onRunNow = viewModel::runCurrentDraft,
                 onClearDraft = viewModel::clearDraft,
+                onExpertArgumentsChanged = viewModel::updateExpertArguments,
+                onSkipHostDiscoveryChanged = viewModel::updateSkipHostDiscovery,
+                onServiceDetectionChanged = viewModel::updateServiceDetection,
+                onDefaultScriptsChanged = viewModel::updateDefaultScripts,
+                onOsDetectionChanged = viewModel::updateOsDetection,
+                onTracerouteChanged = viewModel::updateTraceroute,
+                onTimingTemplateChanged = viewModel::updateTimingTemplate,
+                onPortListChanged = viewModel::updatePortList,
+                onTopPortsChanged = viewModel::updateTopPorts,
+                onScriptSelectionChanged = viewModel::updateScriptSelection,
                 paddingValues = innerPadding,
             )
 
-            AppTab.HISTORY -> HistoryScreen(
-                runs = runs,
-                paddingValues = innerPadding,
-            )
-
+            AppTab.HISTORY -> HistoryScreen(runs = runs, paddingValues = innerPadding)
             AppTab.AUTOMATION -> AutomationScreen(
                 schedules = schedules,
                 onEditProfile = {
@@ -207,7 +213,11 @@ private fun DashboardScreen(
                     Text(text = "Execution posture", style = MaterialTheme.typography.titleMedium)
                     Text(
                         text = capabilityState.capabilities?.advisory
-                            ?: "This baseline prefers remote execution for non-root devices and records all decisions transparently.",
+                            ?: "Remote execution is the primary path for non-root Android, while local execution remains capability-gated.",
+                    )
+                    Text(
+                        text = "Use Builder for structured Nmap controls, expert arguments, autonomous scheduling, and saved profiles.",
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                     Button(onClick = onNewScan) {
                         Text("Create scan profile")
@@ -215,15 +225,11 @@ private fun DashboardScreen(
                 }
             }
         }
-        item {
-            SectionHeader(title = "Recent profiles")
-        }
+        item { SectionHeader(title = "Recent profiles") }
         items(profiles.take(5), key = { it.id }) { profile ->
             ProfileCard(profile = profile, onEdit = { onEditProfile(profile.id) }, onRun = { onRunProfile(profile.id) })
         }
-        item {
-            SectionHeader(title = "Recent runs")
-        }
+        item { SectionHeader(title = "Recent runs") }
         items(runs.take(5), key = { it.id }) { run ->
             RunCard(run = run)
         }
@@ -235,7 +241,6 @@ private fun BuilderScreen(
     state: ScanBuilderUiState,
     onNameChanged: (String) -> Unit,
     onTargetsChanged: (String) -> Unit,
-    onArgumentsChanged: (String) -> Unit,
     onNotesChanged: (String) -> Unit,
     onToolSelected: (ToolType) -> Unit,
     onPreferenceSelected: (ExecutionPreference) -> Unit,
@@ -246,6 +251,16 @@ private fun BuilderScreen(
     onSaveProfile: () -> Unit,
     onRunNow: () -> Unit,
     onClearDraft: () -> Unit,
+    onExpertArgumentsChanged: (String) -> Unit,
+    onSkipHostDiscoveryChanged: (Boolean) -> Unit,
+    onServiceDetectionChanged: (Boolean) -> Unit,
+    onDefaultScriptsChanged: (Boolean) -> Unit,
+    onOsDetectionChanged: (Boolean) -> Unit,
+    onTracerouteChanged: (Boolean) -> Unit,
+    onTimingTemplateChanged: (NmapTimingTemplate) -> Unit,
+    onPortListChanged: (String) -> Unit,
+    onTopPortsChanged: (String) -> Unit,
+    onScriptSelectionChanged: (String) -> Unit,
     paddingValues: PaddingValues,
 ) {
     Column(
@@ -258,7 +273,7 @@ private fun BuilderScreen(
     ) {
         Text(text = "Scan builder", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Use presets for common workflows and the expert arguments field for full CLI-style control. Targets are managed separately and injected safely.",
+            text = "Build profiles with structured controls first, then use expert arguments for the remaining flags you intentionally need.",
             style = MaterialTheme.typography.bodyMedium,
         )
 
@@ -274,7 +289,7 @@ private fun BuilderScreen(
             onValueChange = onTargetsChanged,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Targets") },
-            supportingText = { Text("Enter one host/range/CIDR per line or separate with commas.") },
+            supportingText = { Text("One host/range/CIDR per line, or separate multiple targets with commas.") },
             minLines = 3,
         )
 
@@ -307,15 +322,55 @@ private fun BuilderScreen(
             }
         }
 
+        if (state.tool == ToolType.NMAP) {
+            StructuredNmapOptionsCard(
+                state = state,
+                onSkipHostDiscoveryChanged = onSkipHostDiscoveryChanged,
+                onServiceDetectionChanged = onServiceDetectionChanged,
+                onDefaultScriptsChanged = onDefaultScriptsChanged,
+                onOsDetectionChanged = onOsDetectionChanged,
+                onTracerouteChanged = onTracerouteChanged,
+                onTimingTemplateChanged = onTimingTemplateChanged,
+                onPortListChanged = onPortListChanged,
+                onTopPortsChanged = onTopPortsChanged,
+                onScriptSelectionChanged = onScriptSelectionChanged,
+            )
+        }
+
         OutlinedTextField(
-            value = state.rawArguments,
-            onValueChange = onArgumentsChanged,
+            value = state.expertArguments,
+            onValueChange = onExpertArgumentsChanged,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Expert arguments") },
-            supportingText = { Text("Examples: -Pn -sV -T4, --script default,safe, --top-ports 200") },
+            label = {
+                Text(if (state.tool == ToolType.NMAP) "Extra expert arguments" else "Arguments")
+            },
+            supportingText = {
+                Text(
+                    if (state.tool == ToolType.NMAP) {
+                        "Use this only for flags not already covered by the structured Nmap controls."
+                    } else {
+                        "Full CLI-style argument entry for ${state.tool.binaryName}."
+                    },
+                )
+            },
             minLines = 3,
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
         )
+
+        PreviewCard(title = "Effective arguments", body = state.effectiveArguments.ifBlank { "No arguments selected." })
+        PreviewCard(title = "Command preview", body = state.commandPreview)
+
+        if (state.builderIssues.isNotEmpty()) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(text = "Builder issues", style = MaterialTheme.typography.titleMedium)
+                    state.builderIssues.forEach { issue ->
+                        Text(text = "• $issue", color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                }
+            }
+        }
+
         OutlinedTextField(
             value = state.notes,
             onValueChange = onNotesChanged,
@@ -344,7 +399,7 @@ private fun BuilderScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = state.requireUnmeteredNetwork,
-                            onCheckedChange = { onRequireUnmeteredChanged(it) },
+                            onCheckedChange = onRequireUnmeteredChanged,
                         )
                         Text(text = "Require unmetered network")
                     }
@@ -365,6 +420,86 @@ private fun BuilderScreen(
         }
         TextButton(onClick = onClearDraft, modifier = Modifier.align(Alignment.End)) {
             Text("Clear draft")
+        }
+    }
+}
+
+@Composable
+private fun StructuredNmapOptionsCard(
+    state: ScanBuilderUiState,
+    onSkipHostDiscoveryChanged: (Boolean) -> Unit,
+    onServiceDetectionChanged: (Boolean) -> Unit,
+    onDefaultScriptsChanged: (Boolean) -> Unit,
+    onOsDetectionChanged: (Boolean) -> Unit,
+    onTracerouteChanged: (Boolean) -> Unit,
+    onTimingTemplateChanged: (NmapTimingTemplate) -> Unit,
+    onPortListChanged: (String) -> Unit,
+    onTopPortsChanged: (String) -> Unit,
+    onScriptSelectionChanged: (String) -> Unit,
+) {
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(text = "Structured Nmap options", style = MaterialTheme.typography.titleMedium)
+            SettingSwitchRow(
+                title = "Skip host discovery (-Pn)",
+                checked = state.skipHostDiscovery,
+                onCheckedChange = onSkipHostDiscoveryChanged,
+            )
+            SettingSwitchRow(
+                title = "Service detection (-sV)",
+                checked = state.enableServiceDetection,
+                onCheckedChange = onServiceDetectionChanged,
+            )
+            SettingSwitchRow(
+                title = "Default scripts (-sC)",
+                checked = state.enableDefaultScripts,
+                onCheckedChange = onDefaultScriptsChanged,
+            )
+            SettingSwitchRow(
+                title = "OS detection (-O)",
+                checked = state.enableOsDetection,
+                onCheckedChange = onOsDetectionChanged,
+            )
+            SettingSwitchRow(
+                title = "Traceroute (--traceroute)",
+                checked = state.enableTraceroute,
+                onCheckedChange = onTracerouteChanged,
+            )
+
+            SelectorSection(title = "Timing template") {
+                NmapTimingTemplate.entries.forEach { template ->
+                    FilterChip(
+                        selected = state.timingTemplate == template,
+                        onClick = { onTimingTemplateChanged(template) },
+                        label = { Text(template.name) },
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = state.portList,
+                onValueChange = onPortListChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Port list (-p)") },
+                supportingText = { Text("Example: 22,80,443 or 1-1024") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = state.topPorts,
+                onValueChange = onTopPortsChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Top ports (--top-ports)") },
+                supportingText = { Text("Use this instead of a manual port list when you want ranked common ports.") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = state.scriptSelection,
+                onValueChange = onScriptSelectionChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Script selection (--script)") },
+                supportingText = { Text("Example: default,safe or http-title") },
+                singleLine = true,
+            )
         }
     }
 }
@@ -447,7 +582,7 @@ private fun SettingsScreen(
     ) {
         Text(text = "Remote executor settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Remote mode provides the honest path to fuller Nmap parity on non-root Android. The bearer token is stored encrypted with Android Keystore.",
+            text = "Remote mode provides the honest path to broader Nmap functionality on modern non-root Android. The bearer token is stored encrypted with Android Keystore.",
         )
         OutlinedTextField(
             value = settingsState.baseUrl,
@@ -462,7 +597,7 @@ private fun SettingsScreen(
             onValueChange = onTokenChanged,
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Bearer token") },
-            supportingText = { Text("Optional. Leave empty only on trusted private deployments.") },
+            supportingText = { Text("Optional. Leave empty only on intentionally trusted private deployments.") },
             singleLine = true,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -477,17 +612,22 @@ private fun SettingsScreen(
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Remote capability report", style = MaterialTheme.typography.titleMedium)
-                    Text(text = "nmap: ${capabilities.nmapAvailable}")
-                    Text(text = "ncat: ${capabilities.ncatAvailable}")
-                    Text(text = "nping: ${capabilities.npingAvailable}")
+                    Text(text = "nmap available: ${capabilities.nmapAvailable}")
+                    Text(text = "ncat available: ${capabilities.ncatAvailable}")
+                    Text(text = "nping available: ${capabilities.npingAvailable}")
                     Text(text = "privileged raw access: ${capabilities.privileged}")
+                    Text(text = "requires authentication: ${capabilities.requiresAuthentication}")
+                    Text(text = "max targets per request: ${capabilities.maxTargetsPerRequest}")
+                    Text(text = "max arguments per request: ${capabilities.maxArgumentsPerRequest}")
+                    Text(text = "captured output limit: ${capabilities.outputCaptureLimitBytes} bytes")
+                    Text(text = "target policy: ${capabilities.targetPolicySummary}")
                     Text(text = capabilities.advisory)
                 }
             }
         }
         capabilityState.error?.let { error ->
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Text(text = error, modifier = Modifier.padding(16.dp))
+                Text(text = error, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer)
             }
         }
     }
@@ -536,10 +676,22 @@ private fun ProfileCard(
 
 @Composable
 private fun RunCard(run: ScanRunSummary) {
+    val changeContainerColor = when (run.changeKind) {
+        RunChangeKind.BASELINE -> MaterialTheme.colorScheme.secondaryContainer
+        RunChangeKind.UNCHANGED -> MaterialTheme.colorScheme.surfaceVariant
+        RunChangeKind.CHANGED -> MaterialTheme.colorScheme.tertiaryContainer
+    }
     Card {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(text = run.profileName, style = MaterialTheme.typography.titleMedium)
             Text(text = "${run.status.name} via ${run.route.name} • ${run.trigger.name}")
+            Card(colors = CardDefaults.cardColors(containerColor = changeContainerColor)) {
+                Text(
+                    text = run.changeSummary,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text(
                 text = run.commandPreview,
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -570,6 +722,35 @@ private fun RunCard(run: ScanRunSummary) {
                 style = MaterialTheme.typography.labelSmall,
             )
         }
+    }
+}
+
+@Composable
+private fun PreviewCard(
+    title: String,
+    body: String,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(text = title)
     }
 }
 

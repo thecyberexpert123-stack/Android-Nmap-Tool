@@ -70,8 +70,11 @@ data class RemoteCapabilitiesResponse(
     val ncatAvailable: Boolean,
     val npingAvailable: Boolean,
     val privileged: Boolean,
+    val requiresAuthentication: Boolean,
     val maxTargetsPerRequest: Int,
     val maxArgumentsPerRequest: Int,
+    val outputCaptureLimitBytes: Int,
+    val targetPolicySummary: String,
     val advisory: String,
 )
 
@@ -150,4 +153,30 @@ enum class ScanPreset(
         suggestedArguments = listOf("--tcp"),
         description = "Probe reachability and latency with nping.",
     ),
+}
+
+object CommandPreview {
+    fun render(tool: ToolType, arguments: List<String>, targets: List<String>): String {
+        val parts = buildList {
+            add(tool.binaryName)
+            addAll(arguments)
+            addAll(targets)
+        }
+        return renderTokens(parts)
+    }
+
+    fun renderArguments(arguments: List<String>): String = renderTokens(arguments)
+
+    private fun renderTokens(tokens: List<String>): String =
+        tokens.joinToString(separator = " ") { token ->
+            if (token.any(Char::isWhitespace)) {
+                buildString {
+                    append('"')
+                    append(token.replace("\"", "\\\""))
+                    append('"')
+                }
+            } else {
+                token
+            }
+        }
 }

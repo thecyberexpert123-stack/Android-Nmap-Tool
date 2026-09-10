@@ -18,6 +18,7 @@ import com.thecyberexpert123.nmaptool.contract.ValidationResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.net.URI
+import java.security.MessageDigest
 import java.util.UUID
 
 private const val MAX_TEXT_SNAPSHOT = 120_000
@@ -50,6 +51,12 @@ data class AutomationScheduleSummary(
     val enabled: Boolean,
 )
 
+enum class RunChangeKind {
+    BASELINE,
+    UNCHANGED,
+    CHANGED,
+}
+
 data class ScanRunSummary(
     val id: String,
     val profileId: String?,
@@ -65,6 +72,8 @@ data class ScanRunSummary(
     val message: String,
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
+    val changeKind: RunChangeKind,
+    val changeSummary: String,
 )
 
 class DefaultScanRepository(
@@ -108,7 +117,9 @@ class DefaultScanRepository(
 
     fun observeRuns(): Flow<List<ScanRunSummary>> =
         runDao.observeRecent().map { runs ->
+            val changeByRunId = buildRunChangeMap(runs)
             runs.map { entity ->
+                val change = changeByRunId.getValue(entity.id)
                 ScanRunSummary(
                     id = entity.id,
                     profileId = entity.profileId,
@@ -124,6 +135,8 @@ class DefaultScanRepository(
                     message = entity.message,
                     startedAtEpochMillis = entity.startedAtEpochMillis,
                     finishedAtEpochMillis = entity.finishedAtEpochMillis,
+                    changeKind = change.kind,
+                    changeSummary = change.summary,
                 )
             }
         }
@@ -332,4 +345,71 @@ class DefaultScanRepository(
         }
         return issues
     }
+
+    private fun buildRunChangeMap(runs: List<ScanRunEntity>): Map<String, RunChangeSummary> {
+        val changes = mutableMapOf<String, RunChangeSummary>()
+        runs.groupBy { entity -> entity.profileId ?: "${entity.toolType}:${entity.profileName}" }
+            .values
+            .forEach { profileRuns ->
+                val ordered = profileRuns.sortedBy { it.startedAtEpochMillis }
+                ordered.forEachIndexed { index, current ->
+                    val previous = ordered.getOrNull(index - 1)
+                    changes[current.id] = compareRuns(previous, current)
+                }
+            }
+        return changes
+    }
+
+    private fun compareRuns(previous: ScanRunEntity?, current: ScanRunEntity): RunChangeSummary {
+        if (previous == null) {
+            return RunChangeSummary(
+                kind = RunChangeKind.BASELINE,
+                summary = "First recorded run for this profile.",
+            )
+        }
+
+        val deltas = mutableListOf<String>()
+        if (previous.status != current.status) {
+            deltas += "status ${previous.status} → ${current.status}"
+        }
+        if (previous.route != current.route) {
+            deltas += "route ${previous.route} → ${current.route}"
+        }
+        if (previous.exitCode != current.exitCode) {
+            deltas += "exit code ${previous.exitCode ?: "none"} → ${current.exitCode ?: "none"}"
+        }
+        if (previous.commandPreview != current.commandPreview) {
+            deltas += "command arguments changed"
+        }
+        if (fingerprint(previous.stdout) != fingerprint(current.stdout) || fingerprint(previous.stderr) != fingerprint(current.stderr)) {
+            deltas += "captured output changed"
+        }
+
+        return if (deltas.isEmpty()) {
+            RunChangeSummary(
+                kind = RunChangeKind.UNCHANGED,
+                summary = "No meaningful delta from the previous recorded run.",
+            )
+        } else {
+            RunChangeSummary(
+                kind = RunChangeKind.CHANGED,
+                summary = deltas.joinToString(separator = "; "),
+            )
+        }
+    }
+
+    private fun fingerprint(value: String): String {
+        if (value.isBlank()) {
+            return ""
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(value.toByteArray()).joinToString(separator = "") { byte ->
+            "%02x".format(byte)
+        }
+    }
+
+    private data class RunChangeSummary(
+        val kind: RunChangeKind,
+        val summary: String,
+    )
 }

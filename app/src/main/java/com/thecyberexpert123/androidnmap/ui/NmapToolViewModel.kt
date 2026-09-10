@@ -10,10 +10,17 @@ import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.work.AutomationScheduler
+import com.thecyberexpert123.nmaptool.contract.ArgumentTokenizer
+import com.thecyberexpert123.nmaptool.contract.CommandPreview
+import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
+import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
+import com.thecyberexpert123.nmaptool.contract.StructuredNmapArgumentComposer
+import com.thecyberexpert123.nmaptool.contract.StructuredNmapOptions
+import com.thecyberexpert123.nmaptool.contract.TargetParser
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,12 +36,24 @@ data class ScanBuilderUiState(
     val tool: ToolType = ToolType.NMAP,
     val executionPreference: ExecutionPreference = ExecutionPreference.AUTO,
     val rawTargets: String = "",
-    val rawArguments: String = "",
     val notes: String = "",
     val scheduleEnabled: Boolean = false,
     val scheduleMinutes: String = "60",
     val requireUnmeteredNetwork: Boolean = false,
     val selectedPreset: ScanPreset? = ScanPreset.QUICK_TCP,
+    val skipHostDiscovery: Boolean = true,
+    val enableServiceDetection: Boolean = false,
+    val enableDefaultScripts: Boolean = false,
+    val enableOsDetection: Boolean = false,
+    val enableTraceroute: Boolean = false,
+    val timingTemplate: NmapTimingTemplate = NmapTimingTemplate.AGGRESSIVE,
+    val portList: String = "",
+    val topPorts: String = "",
+    val scriptSelection: String = "",
+    val expertArguments: String = "-F",
+    val effectiveArguments: String = "",
+    val commandPreview: String = "",
+    val builderIssues: List<String> = emptyList(),
 )
 
 data class RemoteSettingsUiState(
@@ -68,7 +87,7 @@ class NmapToolViewModel(
         initialValue = emptyList(),
     )
 
-    private val _builderState = MutableStateFlow(ScanBuilderUiState())
+    private val _builderState = MutableStateFlow(recalculate(ScanBuilderUiState()))
     val builderState: StateFlow<ScanBuilderUiState> = _builderState.asStateFlow()
 
     private val _remoteSettings = MutableStateFlow(RemoteSettingsUiState())
@@ -86,65 +105,99 @@ class NmapToolViewModel(
             baseUrl = savedSettings.baseUrl,
             bearerToken = savedSettings.bearerToken,
         )
-        _builderState.update { state ->
-            state.copy(rawArguments = ScanPreset.QUICK_TCP.suggestedArguments.joinToString(" "))
-        }
     }
 
     fun consumeMessage() {
         _message.value = null
     }
 
-    fun updateName(value: String) {
-        _builderState.update { it.copy(name = value) }
-    }
+    fun updateName(value: String) = updateBuilder { it.copy(name = value) }
 
-    fun updateTool(value: ToolType) {
-        _builderState.update { it.copy(tool = value) }
-    }
-
-    fun updateExecutionPreference(value: ExecutionPreference) {
-        _builderState.update { it.copy(executionPreference = value) }
-    }
-
-    fun updateTargets(value: String) {
-        _builderState.update { it.copy(rawTargets = value) }
-    }
-
-    fun updateArguments(value: String) {
-        _builderState.update { it.copy(rawArguments = value, selectedPreset = null) }
-    }
-
-    fun updateNotes(value: String) {
-        _builderState.update { it.copy(notes = value) }
-    }
-
-    fun updateScheduleEnabled(value: Boolean) {
-        _builderState.update { it.copy(scheduleEnabled = value) }
-    }
-
-    fun updateScheduleMinutes(value: String) {
-        _builderState.update { it.copy(scheduleMinutes = value) }
-    }
-
-    fun updateRequireUnmeteredNetwork(value: Boolean) {
-        _builderState.update { it.copy(requireUnmeteredNetwork = value) }
-    }
-
-    fun applyPreset(preset: ScanPreset) {
-        _builderState.update {
-            it.copy(
-                tool = preset.tool,
-                rawArguments = preset.suggestedArguments.joinToString(" "),
+    fun updateTool(value: ToolType) = updateBuilder { state ->
+        val preset = state.selectedPreset?.takeIf { it.tool == value }
+        if (value == ToolType.NMAP && state.tool != ToolType.NMAP) {
+            val inferred = StructuredNmapArgumentComposer.inferFromRawArguments(state.expertArguments)
+            state.copy(
+                tool = value,
                 selectedPreset = preset,
+                skipHostDiscovery = inferred.skipHostDiscovery,
+                enableServiceDetection = inferred.enableServiceDetection,
+                enableDefaultScripts = inferred.enableDefaultScripts,
+                enableOsDetection = inferred.enableOsDetection,
+                enableTraceroute = inferred.enableTraceroute,
+                timingTemplate = inferred.timingTemplate,
+                portList = inferred.portList,
+                topPorts = inferred.topPorts,
+                scriptSelection = inferred.scriptSelection,
+                expertArguments = inferred.extraArguments,
+            )
+        } else {
+            state.copy(tool = value, selectedPreset = preset)
+        }
+    }
+
+    fun updateExecutionPreference(value: ExecutionPreference) = updateBuilder { it.copy(executionPreference = value) }
+
+    fun updateTargets(value: String) = updateBuilder { it.copy(rawTargets = value) }
+
+    fun updateExpertArguments(value: String) = updateBuilder { it.copy(expertArguments = value, selectedPreset = null) }
+
+    fun updateNotes(value: String) = updateBuilder { it.copy(notes = value) }
+
+    fun updateScheduleEnabled(value: Boolean) = updateBuilder { it.copy(scheduleEnabled = value) }
+
+    fun updateScheduleMinutes(value: String) = updateBuilder { it.copy(scheduleMinutes = value) }
+
+    fun updateRequireUnmeteredNetwork(value: Boolean) = updateBuilder { it.copy(requireUnmeteredNetwork = value) }
+
+    fun updateSkipHostDiscovery(value: Boolean) = updateBuilder { it.copy(skipHostDiscovery = value, selectedPreset = null) }
+
+    fun updateServiceDetection(value: Boolean) = updateBuilder { it.copy(enableServiceDetection = value, selectedPreset = null) }
+
+    fun updateDefaultScripts(value: Boolean) = updateBuilder { it.copy(enableDefaultScripts = value, selectedPreset = null) }
+
+    fun updateOsDetection(value: Boolean) = updateBuilder { it.copy(enableOsDetection = value, selectedPreset = null) }
+
+    fun updateTraceroute(value: Boolean) = updateBuilder { it.copy(enableTraceroute = value, selectedPreset = null) }
+
+    fun updateTimingTemplate(value: NmapTimingTemplate) = updateBuilder { it.copy(timingTemplate = value, selectedPreset = null) }
+
+    fun updatePortList(value: String) = updateBuilder { it.copy(portList = value, selectedPreset = null) }
+
+    fun updateTopPorts(value: String) = updateBuilder { it.copy(topPorts = value, selectedPreset = null) }
+
+    fun updateScriptSelection(value: String) = updateBuilder { it.copy(scriptSelection = value, selectedPreset = null) }
+
+    fun applyPreset(preset: ScanPreset) = updateBuilder { state ->
+        if (preset.tool == ToolType.NMAP) {
+            val inferred = StructuredNmapArgumentComposer.inferFromRawArguments(
+                CommandPreview.renderArguments(preset.suggestedArguments),
+            )
+            state.copy(
+                tool = ToolType.NMAP,
+                selectedPreset = preset,
+                skipHostDiscovery = inferred.skipHostDiscovery,
+                enableServiceDetection = inferred.enableServiceDetection,
+                enableDefaultScripts = inferred.enableDefaultScripts,
+                enableOsDetection = inferred.enableOsDetection,
+                enableTraceroute = inferred.enableTraceroute,
+                timingTemplate = inferred.timingTemplate,
+                portList = inferred.portList,
+                topPorts = inferred.topPorts,
+                scriptSelection = inferred.scriptSelection,
+                expertArguments = inferred.extraArguments,
+            )
+        } else {
+            state.copy(
+                tool = preset.tool,
+                selectedPreset = preset,
+                expertArguments = CommandPreview.renderArguments(preset.suggestedArguments),
             )
         }
     }
 
     fun clearDraft() {
-        _builderState.value = ScanBuilderUiState(
-            rawArguments = ScanPreset.QUICK_TCP.suggestedArguments.joinToString(" "),
-        )
+        _builderState.value = recalculate(ScanBuilderUiState())
     }
 
     fun loadProfile(profileId: String) {
@@ -155,21 +208,51 @@ class NmapToolViewModel(
                 _message.value = "Profile could not be loaded."
                 return@launch
             }
-            _builderState.value = ScanBuilderUiState(
+
+            val baseState = ScanBuilderUiState(
                 id = profile.id,
                 name = profile.name,
                 tool = profile.tool,
                 executionPreference = profile.executionPreference,
                 rawTargets = profile.rawTargets,
-                rawArguments = profile.rawArguments,
                 notes = profile.notes,
                 scheduleEnabled = schedule?.enabled == true,
                 scheduleMinutes = schedule?.repeatMinutes?.toString() ?: "60",
                 requireUnmeteredNetwork = schedule?.requireUnmeteredNetwork == true,
-                selectedPreset = ScanPreset.entries.firstOrNull {
-                    it.tool == profile.tool && it.suggestedArguments.joinToString(" ") == profile.rawArguments.trim()
-                },
+                selectedPreset = null,
             )
+
+            _builderState.value = if (profile.tool == ToolType.NMAP) {
+                val inferred = StructuredNmapArgumentComposer.inferFromRawArguments(profile.rawArguments)
+                recalculate(
+                    baseState.copy(
+                        skipHostDiscovery = inferred.skipHostDiscovery,
+                        enableServiceDetection = inferred.enableServiceDetection,
+                        enableDefaultScripts = inferred.enableDefaultScripts,
+                        enableOsDetection = inferred.enableOsDetection,
+                        enableTraceroute = inferred.enableTraceroute,
+                        timingTemplate = inferred.timingTemplate,
+                        portList = inferred.portList,
+                        topPorts = inferred.topPorts,
+                        scriptSelection = inferred.scriptSelection,
+                        expertArguments = inferred.extraArguments,
+                        selectedPreset = ScanPreset.entries.firstOrNull {
+                            it.tool == profile.tool &&
+                                CommandPreview.renderArguments(it.suggestedArguments) == profile.rawArguments.trim()
+                        },
+                    ),
+                )
+            } else {
+                recalculate(
+                    baseState.copy(
+                        expertArguments = profile.rawArguments,
+                        selectedPreset = ScanPreset.entries.firstOrNull {
+                            it.tool == profile.tool &&
+                                CommandPreview.renderArguments(it.suggestedArguments) == profile.rawArguments.trim()
+                        },
+                    ),
+                )
+            }
             _message.value = "Loaded profile into the builder."
         }
     }
@@ -241,24 +324,30 @@ class NmapToolViewModel(
     }
 
     private suspend fun persistCurrentDraft(showSuccessMessage: Boolean): String? {
-        val scheduleMinutes = builderState.value.scheduleMinutes.toLongOrNull()
-        if (builderState.value.scheduleEnabled && scheduleMinutes == null) {
+        val currentState = builderState.value
+        if (currentState.builderIssues.isNotEmpty()) {
+            _message.value = currentState.builderIssues.joinToString(separator = "\n")
+            return null
+        }
+
+        val scheduleMinutes = currentState.scheduleMinutes.toLongOrNull()
+        if (currentState.scheduleEnabled && scheduleMinutes == null) {
             _message.value = "Schedule interval must be a whole number of minutes."
             return null
         }
-        if (builderState.value.scheduleEnabled && scheduleMinutes != null && scheduleMinutes < 15L) {
+        if (currentState.scheduleEnabled && scheduleMinutes != null && scheduleMinutes < 15L) {
             _message.value = "Periodic automation must be at least 15 minutes."
             return null
         }
 
         val draft = EditableScanProfile(
-            id = builderState.value.id,
-            name = builderState.value.name,
-            tool = builderState.value.tool,
-            executionPreference = builderState.value.executionPreference,
-            rawTargets = builderState.value.rawTargets,
-            rawArguments = builderState.value.rawArguments,
-            notes = builderState.value.notes,
+            id = currentState.id,
+            name = currentState.name,
+            tool = currentState.tool,
+            executionPreference = currentState.executionPreference,
+            rawTargets = currentState.rawTargets,
+            rawArguments = currentState.effectiveArguments,
+            notes = currentState.notes,
         )
         val result = repository.saveProfile(draft)
         if (!result.isValid) {
@@ -269,14 +358,14 @@ class NmapToolViewModel(
         val profileId = result.value!!
         automationScheduler.syncSchedule(
             profileId = profileId,
-            enabled = builderState.value.scheduleEnabled,
+            enabled = currentState.scheduleEnabled,
             repeatMinutes = scheduleMinutes,
-            requireUnmeteredNetwork = builderState.value.requireUnmeteredNetwork,
+            requireUnmeteredNetwork = currentState.requireUnmeteredNetwork,
         )
         _builderState.update { it.copy(id = profileId) }
 
         if (showSuccessMessage) {
-            _message.value = if (builderState.value.scheduleEnabled) {
+            _message.value = if (currentState.scheduleEnabled) {
                 "Profile saved and automation synchronized."
             } else {
                 "Profile saved."
@@ -284,6 +373,81 @@ class NmapToolViewModel(
         }
         return profileId
     }
+
+    private fun updateBuilder(transform: (ScanBuilderUiState) -> ScanBuilderUiState) {
+        _builderState.update { current -> recalculate(transform(current)) }
+    }
+
+    private fun recalculate(state: ScanBuilderUiState): ScanBuilderUiState {
+        val issues = mutableListOf<String>()
+        val effectiveArguments = when (state.tool) {
+            ToolType.NMAP -> {
+                val result = StructuredNmapArgumentComposer.build(
+                    StructuredNmapOptions(
+                        skipHostDiscovery = state.skipHostDiscovery,
+                        enableServiceDetection = state.enableServiceDetection,
+                        enableDefaultScripts = state.enableDefaultScripts,
+                        enableOsDetection = state.enableOsDetection,
+                        enableTraceroute = state.enableTraceroute,
+                        timingTemplate = state.timingTemplate,
+                        portList = state.portList,
+                        topPorts = state.topPorts,
+                        scriptSelection = state.scriptSelection,
+                        extraArguments = state.expertArguments,
+                    ),
+                )
+                issues += result.issues.map { "${it.field}: ${it.message}" }
+                result.value.orEmpty()
+            }
+
+            else -> {
+                val tokenResult = tokenizeAndValidate(state.tool, state.expertArguments)
+                issues += tokenResult.issues
+                CommandPreview.renderArguments(tokenResult.arguments)
+            }
+        }
+
+        val commandPreview = if (effectiveArguments.isBlank()) {
+            state.tool.binaryName + state.rawTargets.trim().let { suffix -> if (suffix.isBlank()) "" else " $suffix" }
+        } else {
+            val targets = TargetParser.parse(state.rawTargets)
+            runCatching {
+                CommandPreview.render(
+                    tool = state.tool,
+                    arguments = ArgumentTokenizer.tokenize(effectiveArguments),
+                    targets = targets,
+                )
+            }.getOrDefault(
+                listOf(state.tool.binaryName, effectiveArguments, state.rawTargets.trim())
+                    .filter { it.isNotBlank() }
+                    .joinToString(" "),
+            )
+        }
+
+        return state.copy(
+            effectiveArguments = effectiveArguments,
+            commandPreview = commandPreview,
+            builderIssues = issues.distinct(),
+        )
+    }
+
+    private fun tokenizeAndValidate(tool: ToolType, rawArguments: String): TokenValidationResult {
+        val tokens = try {
+            ArgumentTokenizer.tokenize(rawArguments)
+        } catch (error: IllegalArgumentException) {
+            return TokenValidationResult(
+                arguments = emptyList(),
+                issues = listOf(error.message ?: "Arguments are invalid."),
+            )
+        }
+        val issues = CommandSafetyPolicy.validate(tool, tokens).map { "${it.field}: ${it.message}" }
+        return TokenValidationResult(arguments = tokens, issues = issues)
+    }
+
+    private data class TokenValidationResult(
+        val arguments: List<String>,
+        val issues: List<String>,
+    )
 
     companion object {
         fun factory(

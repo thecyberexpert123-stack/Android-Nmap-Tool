@@ -79,6 +79,27 @@ This document records development observations, constraints, trade-offs, and lea
 - I used Room and WorkManager because they directly satisfy persistence and autonomous scheduling requirements on Android.
 - I kept command modeling generic enough to support `nmap`, `ncat`, and `nping` without inventing a fake replacement engine.
 
+### Additional implementation work completed after the initial bootstrap
+- I extended the builder from a plain text argument field into a more governed workflow by adding structured Nmap controls and deriving the final CLI argument string deterministically.
+- I added per-profile run delta summaries so repeated scans become more actionable instead of just producing isolated logs.
+- I tightened the remote executor with optional target regex policies and capped stdout/stderr capture to reduce abuse and resource-risk on the host.
+
+### Additional challenges encountered
+1. **Structured controls vs open-ended CLI flexibility**
+   - Risk: if structured controls and expert arguments both control the same flags, the generated command becomes ambiguous.
+   - Response: I added conflict detection so managed Nmap flags must come from the structured layer, while genuinely extra flags stay in expert arguments.
+2. **Meaningful diffing without full protocol-aware parsing**
+   - Risk: a fake “diff” would be misleading if it claimed semantic understanding of Nmap output.
+   - Response: I implemented honest delta summaries based on status, route, exit code, command preview, and captured output fingerprint changes.
+3. **Remote executor memory safety**
+   - Risk: unbounded process output can exhaust memory or degrade service quality.
+   - Response: I switched to capped output capture with explicit truncation notes returned to the client.
+
+### Additional lessons so far
+- Structured UI controls are valuable even for expert tools when they generate a deterministic, auditable command line instead of hiding it.
+- For security tooling, “better UX” often means fewer ambiguous states and more transparent policy enforcement.
+- Change awareness matters: recurring scans become significantly more useful when the operator can immediately see whether the latest run materially differs from the previous one.
+
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.
 - Honest capability modeling is essential. A trustworthy security tool must clearly distinguish what it can actually run from what it can only plan or simulate.

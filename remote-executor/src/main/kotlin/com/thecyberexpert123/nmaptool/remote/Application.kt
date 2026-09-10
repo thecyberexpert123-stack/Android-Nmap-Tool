@@ -10,6 +10,7 @@ import com.thecyberexpert123.nmaptool.contract.TargetValidator
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationRequest
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
 import com.thecyberexpert123.nmaptool.contract.ToolType
+import com.thecyberexpert123.nmaptool.contract.ValidationIssue
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -30,6 +31,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -84,7 +88,7 @@ fun Application.nmapExecutorModule(config: ExecutorConfig) {
                 }
 
             val request = call.receive<ToolInvocationRequest>()
-            val issues = validate(request)
+            val issues = validate(request, config)
             if (issues.isNotEmpty()) {
                 call.respond(
                     HttpStatusCode.BadRequest,
@@ -103,6 +107,12 @@ private data class HealthResponse(
     val status: String,
 )
 
+private fun parseRegexList(rawValue: String): List<Regex> =
+    rawValue.split(';')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .map(::Regex)
+
 private fun authorize(headerValue: String?, config: ExecutorConfig): String? {
     val expectedToken = config.bearerToken.orEmpty()
     if (expectedToken.isBlank()) {
@@ -111,9 +121,19 @@ private fun authorize(headerValue: String?, config: ExecutorConfig): String? {
     return if (headerValue == "Bearer $expectedToken") null else "Missing or invalid bearer token."
 }
 
-private fun validate(request: ToolInvocationRequest) = buildList {
+private fun validate(request: ToolInvocationRequest, config: ExecutorConfig) = buildList {
     addAll(TargetValidator.validate(request.targets))
     addAll(CommandSafetyPolicy.validate(request.tool, request.arguments))
+    request.targets.forEachIndexed { index, target ->
+        if (!config.isTargetAllowed(target)) {
+            add(
+                ValidationIssue(
+                    field = "targets[$index]",
+                    message = "Target is outside the remote executor policy: $target",
+                ),
+            )
+        }
+    }
 }
 
 data class ExecutorConfig(
@@ -122,12 +142,24 @@ data class ExecutorConfig(
     val ncatBinary: String,
     val npingBinary: String,
     val executionTimeoutSeconds: Long,
+    val maxOutputBytes: Int,
+    val allowedTargetRegexes: List<Regex>,
 ) {
     fun binaryFor(tool: ToolType): String = when (tool) {
         ToolType.NMAP -> nmapBinary
         ToolType.NCAT -> ncatBinary
         ToolType.NPING -> npingBinary
     }
+
+    fun isTargetAllowed(target: String): Boolean =
+        allowedTargetRegexes.isEmpty() || allowedTargetRegexes.any { regex -> regex.matches(target) }
+
+    fun targetPolicySummary(): String =
+        if (allowedTargetRegexes.isEmpty()) {
+            "No target regex restriction configured."
+        } else {
+            "Targets must match one of ${allowedTargetRegexes.size} configured regex policies."
+        }
 
     companion object {
         fun fromEnvironment(): ExecutorConfig = ExecutorConfig(
@@ -136,6 +168,8 @@ data class ExecutorConfig(
             ncatBinary = System.getenv("NCAT_BINARY") ?: "ncat",
             npingBinary = System.getenv("NPING_BINARY") ?: "nping",
             executionTimeoutSeconds = System.getenv("EXECUTION_TIMEOUT_SECONDS")?.toLongOrNull() ?: 900L,
+            maxOutputBytes = System.getenv("MAX_OUTPUT_BYTES")?.toIntOrNull()?.coerceAtLeast(16_384) ?: 262_144,
+            allowedTargetRegexes = parseRegexList(System.getenv("ALLOWED_TARGET_REGEXES").orEmpty()),
         )
     }
 }
@@ -148,12 +182,16 @@ class RemoteExecutionEngine(
         ncatAvailable = isExecutableAvailable(config.ncatBinary),
         npingAvailable = isExecutableAvailable(config.npingBinary),
         privileged = detectPrivileged(),
+        requiresAuthentication = config.bearerToken.orEmpty().isNotBlank(),
         maxTargetsPerRequest = 64,
         maxArgumentsPerRequest = 128,
+        outputCaptureLimitBytes = config.maxOutputBytes,
+        targetPolicySummary = config.targetPolicySummary(),
         advisory = buildString {
             append("Remote execution is the preferred compatibility path for non-root Android devices. ")
             append("Privileged scans still depend on how this host is configured. ")
-            append("File-writing and process-spawning flags are blocked by policy.")
+            append("File-writing and process-spawning flags are blocked by policy. ")
+            append(config.targetPolicySummary())
         },
     )
 
@@ -183,21 +221,24 @@ class RemoteExecutionEngine(
             .start()
 
         val result = coroutineScope {
-            val stdoutDeferred = async { process.inputStream.bufferedReader().use { it.readText() } }
-            val stderrDeferred = async { process.errorStream.bufferedReader().use { it.readText() } }
+            val stdoutDeferred = async { readCappedText(process.inputStream, config.maxOutputBytes) }
+            val stderrDeferred = async { readCappedText(process.errorStream, config.maxOutputBytes) }
             val finishedInTime = process.waitFor(config.executionTimeoutSeconds, TimeUnit.SECONDS)
             if (!finishedInTime) {
                 process.destroyForcibly()
-                return@coroutineScope ExecutionResult(
-                    exitCode = null,
-                    stdout = stdoutDeferred.await(),
-                    stderr = stderrDeferred.await() + "\nExecution timed out after ${config.executionTimeoutSeconds} seconds.",
-                )
             }
+            val stdoutCapture = stdoutDeferred.await()
+            val stderrCapture = stderrDeferred.await()
             ExecutionResult(
-                exitCode = process.exitValue(),
-                stdout = stdoutDeferred.await(),
-                stderr = stderrDeferred.await(),
+                exitCode = if (finishedInTime) process.exitValue() else null,
+                stdout = stdoutCapture.asDisplayText(streamName = "stdout"),
+                stderr = buildString {
+                    append(stderrCapture.asDisplayText(streamName = "stderr"))
+                    if (!finishedInTime) {
+                        if (isNotEmpty()) append('\n')
+                        append("Execution timed out after ${config.executionTimeoutSeconds} seconds.")
+                    }
+                },
             )
         }
 
@@ -240,9 +281,53 @@ class RemoteExecutionEngine(
         }.getOrDefault(false)
     }
 
+    private fun readCappedText(inputStream: InputStream, maxBytes: Int): CapturedText {
+        inputStream.use { stream ->
+            val preserved = ByteArrayOutputStream(maxBytes.coerceAtMost(8_192))
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var totalBytes = 0L
+            var truncated = false
+            while (true) {
+                val bytesRead = stream.read(buffer)
+                if (bytesRead < 0) {
+                    break
+                }
+                totalBytes += bytesRead
+                val remaining = maxBytes - preserved.size()
+                if (remaining > 0) {
+                    preserved.write(buffer, 0, bytesRead.coerceAtMost(remaining))
+                }
+                if (bytesRead > remaining) {
+                    truncated = true
+                }
+            }
+            return CapturedText(
+                content = preserved.toString(StandardCharsets.UTF_8),
+                truncated = truncated || totalBytes > maxBytes,
+                originalBytes = totalBytes,
+                limitBytes = maxBytes,
+            )
+        }
+    }
+
     private data class ExecutionResult(
         val exitCode: Int?,
         val stdout: String,
         val stderr: String,
     )
+
+    private data class CapturedText(
+        val content: String,
+        val truncated: Boolean,
+        val originalBytes: Long,
+        val limitBytes: Int,
+    ) {
+        fun asDisplayText(streamName: String): String = buildString {
+            append(content)
+            if (truncated) {
+                if (isNotEmpty()) append('\n')
+                append("[$streamName truncated after $limitBytes bytes; original stream size was $originalBytes bytes]")
+            }
+        }
+    }
 }

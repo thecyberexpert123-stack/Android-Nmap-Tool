@@ -43,6 +43,22 @@ The format is intentionally simple and incremental so each agent session can app
 - Implemented schedule persistence and recurring execution orchestration with WorkManager.
 - Implemented structured support for `nmap`, `ncat`, and `nping` requests.
 - Implemented a command safety policy that blocks remote-host-dangerous flags such as output-file redirection and Ncat process-exec modes.
+- Added a **structured Nmap builder** layer with deterministic argument composition for common scan controls:
+  - host discovery skip
+  - service detection
+  - default scripts
+  - OS detection
+  - traceroute
+  - timing template
+  - explicit port list or top-ports mode
+  - script selection
+  - extra expert arguments with conflict detection
+- Added **live effective-argument** and **command preview** generation in the Android builder workflow.
+- Added **run-delta summaries** in history to compare each run against the previous run of the same profile.
+- Hardened the remote executor with:
+  - optional regex-based target allowlisting,
+  - bounded stdout/stderr capture,
+  - expanded capability reporting for authentication requirement, target policy, and output limits.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

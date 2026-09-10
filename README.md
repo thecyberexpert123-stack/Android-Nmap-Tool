@@ -84,12 +84,23 @@ This project chooses correctness over false claims:
 - Profile creation and editing
 - Support for `nmap`, `ncat`, `nping`
 - Presets plus expert CLI argument entry
+- **Structured Nmap builder controls** for common flags:
+  - `-Pn`
+  - `-sV`
+  - `-sC`
+  - `-O`
+  - `--traceroute`
+  - timing template selection (`-T0` to `-T5`)
+  - explicit port list / top-ports mode
+  - script selection
+- Live effective-argument preview and full command preview
 - Shared validation for targets and arguments
 - Room persistence for profiles, schedules, and run history
 - WorkManager-based recurring scan scheduling
 - Remote executor settings with **Android Keystore-encrypted bearer token storage**
 - Capability refresh from the backend
 - Execution result persistence and history cards
+- Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -112,6 +123,8 @@ This project chooses correctness over false claims:
   - executor-side file input indirection
   - ncat command execution modes
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
+- optional target-scope restriction via `ALLOWED_TARGET_REGEXES`
+- bounded output capture via `MAX_OUTPUT_BYTES`
 - enforces execution timeout
 
 ## Supported remote executor environment variables
@@ -124,6 +137,8 @@ This project chooses correctness over false claims:
 | `NCAT_BINARY` | Path or command name for `ncat` | `ncat` |
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
 | `EXECUTION_TIMEOUT_SECONDS` | Maximum runtime per request | `900` |
+| `MAX_OUTPUT_BYTES` | Per-stream capture limit for stdout/stderr | `262144` |
+| `ALLOWED_TARGET_REGEXES` | Optional semicolon-separated regex allowlist for targets | unset |
 
 ## Build requirements
 
@@ -167,11 +182,13 @@ export NPING_BINARY="nping"
 5. Build a profile in **Builder** using:
    - targets,
    - tool selection,
-   - expert arguments,
+   - structured Nmap controls where applicable,
+   - extra expert arguments,
    - execution mode,
    - optional recurring schedule.
-6. Save the profile and run it manually or let automation trigger it.
-7. Inspect status, logs, and command previews in **History**.
+6. Review the live effective-argument preview and command preview.
+7. Save the profile and run it manually or let automation trigger it.
+8. Inspect status, logs, and run-to-run deltas in **History**.
 
 ## Command safety policy
 
