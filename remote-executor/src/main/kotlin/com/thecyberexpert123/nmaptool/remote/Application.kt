@@ -36,6 +36,7 @@ import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 fun main() {
@@ -138,6 +139,7 @@ private fun validate(request: ToolInvocationRequest, config: ExecutorConfig) = b
 
 data class ExecutorConfig(
     val bearerToken: String?,
+    val executorLabel: String,
     val nmapBinary: String,
     val ncatBinary: String,
     val npingBinary: String,
@@ -164,6 +166,11 @@ data class ExecutorConfig(
     companion object {
         fun fromEnvironment(): ExecutorConfig = ExecutorConfig(
             bearerToken = System.getenv("NMAP_EXECUTOR_TOKEN"),
+            executorLabel = System.getenv("EXECUTOR_LABEL")
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?: System.getenv("HOSTNAME")?.trim()?.takeIf(String::isNotBlank)
+                ?: "remote-executor",
             nmapBinary = System.getenv("NMAP_BINARY") ?: "nmap",
             ncatBinary = System.getenv("NCAT_BINARY") ?: "ncat",
             npingBinary = System.getenv("NPING_BINARY") ?: "nping",
@@ -177,26 +184,36 @@ data class ExecutorConfig(
 class RemoteExecutionEngine(
     private val config: ExecutorConfig,
 ) {
-    fun capabilities(): RemoteCapabilitiesResponse = RemoteCapabilitiesResponse(
-        nmapAvailable = isExecutableAvailable(config.nmapBinary),
-        ncatAvailable = isExecutableAvailable(config.ncatBinary),
-        npingAvailable = isExecutableAvailable(config.npingBinary),
-        privileged = detectPrivileged(),
-        requiresAuthentication = config.bearerToken.orEmpty().isNotBlank(),
-        maxTargetsPerRequest = 64,
-        maxArgumentsPerRequest = 128,
-        outputCaptureLimitBytes = config.maxOutputBytes,
-        targetPolicySummary = config.targetPolicySummary(),
-        advisory = buildString {
-            append("Remote execution is the preferred compatibility path for non-root Android devices. ")
-            append("Privileged scans still depend on how this host is configured. ")
-            append("File-writing and process-spawning flags are blocked by policy. ")
-            append(config.targetPolicySummary())
-        },
-        supportsStructuredNmapXml = true,
-    )
+    fun capabilities(): RemoteCapabilitiesResponse {
+        val nmapAvailable = isExecutableAvailable(config.nmapBinary)
+        val ncatAvailable = isExecutableAvailable(config.ncatBinary)
+        val npingAvailable = isExecutableAvailable(config.npingBinary)
+        return RemoteCapabilitiesResponse(
+            nmapAvailable = nmapAvailable,
+            ncatAvailable = ncatAvailable,
+            npingAvailable = npingAvailable,
+            privileged = detectPrivileged(),
+            requiresAuthentication = config.bearerToken.orEmpty().isNotBlank(),
+            maxTargetsPerRequest = 64,
+            maxArgumentsPerRequest = 128,
+            outputCaptureLimitBytes = config.maxOutputBytes,
+            targetPolicySummary = config.targetPolicySummary(),
+            advisory = buildString {
+                append("Remote execution is the preferred compatibility path for non-root Android devices. ")
+                append("Privileged scans still depend on how this host is configured. ")
+                append("File-writing and process-spawning flags are blocked by policy. ")
+                append(config.targetPolicySummary())
+            },
+            supportsStructuredNmapXml = true,
+            executorLabel = config.executorLabel,
+            nmapVersion = if (nmapAvailable) detectToolVersion(config.nmapBinary, listOf("--version")) else null,
+            ncatVersion = if (ncatAvailable) detectToolVersion(config.ncatBinary, listOf("--version")) else null,
+            npingVersion = if (npingAvailable) detectToolVersion(config.npingBinary, listOf("--version")) else null,
+        )
+    }
 
     suspend fun execute(request: ToolInvocationRequest): ToolInvocationResponse = withContext(Dispatchers.IO) {
+        val requestId = UUID.randomUUID().toString()
         val startedAt = System.currentTimeMillis()
         val binary = config.binaryFor(request.tool)
         if (!isExecutableAvailable(binary)) {
@@ -209,6 +226,8 @@ class RemoteExecutionEngine(
                 startedAtEpochMillis = startedAt,
                 finishedAtEpochMillis = System.currentTimeMillis(),
                 message = "Remote executor is missing the requested tool.",
+                requestId = requestId,
+                executorLabel = config.executorLabel,
             )
         }
 
@@ -291,6 +310,8 @@ class RemoteExecutionEngine(
                 stdoutTruncated = result.stdoutTruncated,
                 stderrTruncated = result.stderrTruncated,
                 nmapXmlOutputTruncated = result.nmapXmlOutputTruncated,
+                requestId = requestId,
+                executorLabel = config.executorLabel,
             )
         } finally {
             structuredFiles?.deleteQuietly()
@@ -318,6 +339,24 @@ class RemoteExecutionEngine(
             output == "0"
         }.getOrDefault(false)
     }
+
+    private fun detectToolVersion(binary: String, versionArguments: List<String>): String? =
+        runCatching {
+            val process = ProcessBuilder(buildList {
+                add(binary)
+                addAll(versionArguments)
+            })
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+            }
+            output.lineSequence()
+                .map(String::trim)
+                .firstOrNull(String::isNotEmpty)
+                ?.take(200)
+        }.getOrNull()
 
     private fun readCappedText(inputStream: InputStream, maxBytes: Int): CapturedText {
         inputStream.use { stream ->

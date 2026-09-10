@@ -24,7 +24,7 @@ It is designed around one hard technical reality:
 This repository now contains:
 
 - `app/` — Android app using Kotlin + Jetpack Compose + Room + WorkManager
-- `common-contract/` — shared request/response models and validation logic used by both Android and backend
+- `common-contract/` — shared request/response models, validation logic, structured parsing, and report rendering used by both Android and backend
 - `remote-executor/` — Ktor-based backend that runs validated tool requests through `ProcessBuilder`
 - `CHANGELOG.md` — incremental change tracking
 - `AGENT-EXPERIENCE.md` — development decisions, lessons, and constraints
@@ -100,6 +100,7 @@ This project chooses correctness over false claims:
 - Remote executor settings with **Android Keystore-encrypted bearer token storage**
 - Capability refresh from the backend
 - Automatic capability re-check after saving remote executor settings
+- Remote capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 - Dashboard insight cards for:
@@ -115,7 +116,8 @@ This project chooses correctness over false claims:
   - newly open endpoints since the previous run
   - previously open endpoints no longer present
 - Profile and automation views now surface saved schedule cadence and the most recent run outcome for faster operator triage.
-- Run history now surfaces parse provenance, execution duration, observed-host counts, and explicit capture-truncation warnings.
+- Run history now surfaces parse provenance, execution duration, observed-host counts, explicit capture-truncation warnings, and remote request/executor identifiers when available.
+- History now includes built-in **report export generation** with Markdown and CSV outputs derived from saved run history.
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -150,6 +152,7 @@ This project chooses correctness over false claims:
 |---|---|---|
 | `PORT` | HTTP server port | `8080` |
 | `NMAP_EXECUTOR_TOKEN` | Optional bearer token required by API | unset |
+| `EXECUTOR_LABEL` | Optional human-readable label returned in capability reports and run audit metadata | hostname or `remote-executor` |
 | `NMAP_BINARY` | Path or command name for `nmap` | `nmap` |
 | `NCAT_BINARY` | Path or command name for `ncat` | `ncat` |
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
@@ -206,7 +209,8 @@ export NPING_BINARY="nping"
 6. Review the live effective-argument preview and command preview.
 7. Save the profile and run it manually or let automation trigger it.
 8. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
-9. Inspect status, logs, parsed findings, and run-to-run deltas in **History**.
+9. Inspect status, logs, parsed findings, run-to-run deltas, and request/executor audit metadata in **History**.
+10. Generate a Markdown or CSV report preview from saved history and copy it for downstream sharing.
 
 ## Result summaries
 
@@ -232,6 +236,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 ### Important limitation
 - XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
 - The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
+- Exported Markdown/CSV reports reflect only the runs saved in local history; they are reporting artifacts, not a substitute for build/runtime verification or full raw upstream output retention.
 - Non-Nmap tool summaries and fallback text parsing remain **heuristic**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
@@ -251,7 +256,7 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 1. Local native execution integration strategy
    - bundled binaries, user-provided binaries, or companion runtime
 2. richer Nmap result modeling using structured output formats where feasible
-3. export/reporting formats
+3. report sharing beyond clipboard/export preview, such as SAF-backed file export or share intents
 4. optional authenticated multi-user remote executor governance
 5. local-vs-remote capability detection and policy UX refinement
 

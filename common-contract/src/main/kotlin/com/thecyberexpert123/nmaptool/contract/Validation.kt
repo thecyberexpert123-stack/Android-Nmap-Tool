@@ -231,25 +231,3 @@ object InvocationFactory {
         )
     }
 }
-
-object CommandPreview {
-    fun render(tool: ToolType, arguments: List<String>, targets: List<String>): String {
-        val parts = buildList {
-            add(tool.binaryName)
-            addAll(arguments)
-            addAll(targets)
-        }
-
-        return parts.joinToString(separator = " ") { token ->
-            if (token.any(Char::isWhitespace)) {
-                buildString {
-                    append('"')
-                    append(token.replace("\"", "\\\""))
-                    append('"')
-                }
-            } else {
-                token
-            }
-        }
-    }
-}

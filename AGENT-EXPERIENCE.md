@@ -104,6 +104,8 @@ This document records development observations, constraints, trade-offs, and lea
 - When a tool already has a documented structured output format, it is usually better engineering to capture and parse that format than to keep expanding fragile text heuristics. Nmap XML fits that pattern well.
 - Once structured parsing exists, it is also important to preserve **capture integrity metadata**. Otherwise the UI can overstate confidence in partial/truncated results.
 - Profile dashboards become more actionable when they combine configuration state, schedule cadence, and latest execution outcome instead of showing saved profiles as static objects.
+- Execution history becomes far more useful for real operations once each run carries correlation metadata such as executor labels and request IDs; otherwise screenshots and copied excerpts are hard to reconcile with backend-side investigation.
+- Static source review still matters when the sandbox cannot compile: in this pass, manual inspection exposed a duplicate `CommandPreview` object in the shared module that honest runtime-free verification had not previously surfaced.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

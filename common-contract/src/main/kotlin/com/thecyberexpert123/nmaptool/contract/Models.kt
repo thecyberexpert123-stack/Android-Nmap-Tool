@@ -73,6 +73,8 @@ data class ToolInvocationResponse(
     val stdoutTruncated: Boolean = false,
     val stderrTruncated: Boolean = false,
     val nmapXmlOutputTruncated: Boolean = false,
+    val requestId: String? = null,
+    val executorLabel: String? = null,
 )
 
 @Serializable
@@ -88,6 +90,10 @@ data class RemoteCapabilitiesResponse(
     val targetPolicySummary: String,
     val advisory: String,
     val supportsStructuredNmapXml: Boolean = false,
+    val executorLabel: String? = null,
+    val nmapVersion: String? = null,
+    val ncatVersion: String? = null,
+    val npingVersion: String? = null,
 )
 
 @Serializable

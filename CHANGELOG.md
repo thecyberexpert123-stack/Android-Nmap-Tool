@@ -73,6 +73,11 @@ The format is intentionally simple and incremental so each agent session can app
 - Added profile and automation summaries for latest run outcome and saved schedule cadence.
 - Added richer run-detail cards for execution duration, observed-host counts, endpoint counts, and capture/parsing warnings.
 - Added automatic capability refresh after saving remote executor settings.
+- Added shared Markdown/CSV execution report rendering in `common-contract` and Android-side history export preview/copy workflow.
+- Added remote executor audit metadata propagation with per-run request IDs and executor labels.
+- Added remote capability version/detail reporting for executor label plus detected `nmap`, `ncat`, and `nping` version banners when available.
+- Added Room schema support for persisting remote request IDs and executor labels across saved history.
+- Removed a duplicate `CommandPreview` definition from `common-contract` to resolve an obvious compile-time symbol conflict in source.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

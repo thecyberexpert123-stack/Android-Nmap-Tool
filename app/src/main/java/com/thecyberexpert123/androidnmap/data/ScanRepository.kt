@@ -87,6 +87,8 @@ data class ScanRunSummary(
     val stdoutTruncated: Boolean,
     val stderrTruncated: Boolean,
     val nmapXmlOutputTruncated: Boolean,
+    val requestId: String?,
+    val executorLabel: String?,
     val changeKind: RunChangeKind,
     val changeSummary: String,
     val parsedSummary: ToolResultSummary,
@@ -206,6 +208,8 @@ class DefaultScanRepository(
                     stdoutTruncated = entity.stdoutTruncated,
                     stderrTruncated = entity.stderrTruncated,
                     nmapXmlOutputTruncated = entity.nmapXmlOutputTruncated,
+                    requestId = entity.requestId,
+                    executorLabel = entity.executorLabel,
                     changeKind = change.kind,
                     changeSummary = change.summary,
                     parsedSummary = parsedRun.parsedSummary,
@@ -389,6 +393,8 @@ class DefaultScanRepository(
                 stdoutTruncated = response.stdoutTruncated,
                 stderrTruncated = response.stderrTruncated,
                 nmapXmlOutputTruncated = response.nmapXmlOutputTruncated,
+                requestId = response.requestId?.take(200),
+                executorLabel = response.executorLabel?.take(200),
             ),
         )
         return response

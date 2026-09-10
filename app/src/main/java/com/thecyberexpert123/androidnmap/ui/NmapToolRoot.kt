@@ -42,6 +42,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,9 +53,12 @@ import com.thecyberexpert123.androidnmap.data.AutomationScheduleSummary
 import com.thecyberexpert123.androidnmap.data.RunChangeKind
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
-import com.thecyberexpert123.nmaptool.contract.ResultParseSource
-import com.thecyberexpert123.nmaptool.contract.RunStatus
+import com.thecyberexpert123.androidnmap.reporting.buildExecutionReport
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
+import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
+import com.thecyberexpert123.nmaptool.contract.ResultParseSource
+import com.thecyberexpert123.nmaptool.contract.ReportExportFormat
+import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
@@ -74,6 +79,12 @@ private data class DashboardPortAlert(
     val finding: PortFinding,
     val opened: Boolean,
 )
+
+private enum class HistoryReportFilter(val label: String, val tool: ToolType?, val failuresOnly: Boolean) {
+    ALL("All tools", null, false),
+    NMAP_ONLY("Nmap only", ToolType.NMAP, false),
+    FAILURES_ONLY("Failures only", null, true),
+}
 
 @Composable
 fun NmapToolRoot(viewModel: NmapToolViewModel) {
@@ -272,6 +283,9 @@ private fun DashboardScreen(
                             ?: "Remote execution is the primary path for non-root Android, while local execution remains capability-gated.",
                     )
                     Text(text = if (remoteConfigured) "Remote executor base URL is configured." else "Remote executor base URL is not configured yet.")
+                    capabilityState.capabilities?.executorLabel?.takeIf(String::isNotBlank)?.let { label ->
+                        Text(text = "Connected executor label: $label")
+                    }
                     capabilityState.error?.takeIf(String::isNotBlank)?.let { error ->
                         Text(text = "Latest capability check error: $error", color = MaterialTheme.colorScheme.error)
                     }
@@ -584,6 +598,35 @@ private fun HistoryScreen(
     runs: List<ScanRunSummary>,
     paddingValues: PaddingValues,
 ) {
+    val clipboardManager = LocalClipboardManager.current
+    var selectedFormatIndex by rememberSaveable { mutableIntStateOf(ReportExportFormat.MARKDOWN.ordinal) }
+    var selectedFilterIndex by rememberSaveable { mutableIntStateOf(HistoryReportFilter.ALL.ordinal) }
+    var selectedWindowIndex by rememberSaveable { mutableIntStateOf(1) }
+
+    val selectedFormat = ReportExportFormat.entries[selectedFormatIndex]
+    val selectedFilter = HistoryReportFilter.entries[selectedFilterIndex]
+    val windowSizes = listOf(10, 25, 100)
+    val selectedWindow = windowSizes[selectedWindowIndex.coerceIn(windowSizes.indices)]
+    val filteredRuns = runs.asSequence()
+        .filter { run -> selectedFilter.tool == null || run.tool == selectedFilter.tool }
+        .filter { run -> !selectedFilter.failuresOnly || run.status == RunStatus.FAILED }
+        .take(selectedWindow)
+        .toList()
+    val structuredRuns = runs.count { it.parsedSummary.parseSource == ResultParseSource.STRUCTURED_NMAP_XML }
+    val failedRuns = runs.count { it.status == RunStatus.FAILED }
+    val remoteRuns = runs.count { it.route == ExecutionRoute.REMOTE }
+    val reportText = buildExecutionReport(
+        runs = runs,
+        format = selectedFormat,
+        title = "Android Nmap Tool execution report",
+        maxRuns = selectedWindow,
+        toolFilter = selectedFilter.tool,
+        failuresOnly = selectedFilter.failuresOnly,
+    )
+    val previewText = reportText.take(4_500).let { prefix ->
+        if (prefix.length == reportText.length) prefix else "$prefix\n…[preview truncated; copy export for full report]"
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -593,6 +636,71 @@ private fun HistoryScreen(
     ) {
         item {
             Text(text = "Execution history", style = MaterialTheme.typography.headlineSmall)
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MetricCard(title = "Total runs", value = runs.size.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Failed runs", value = failedRuns.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Structured parsed", value = structuredRuns.toString(), modifier = Modifier.weight(1f))
+            }
+        }
+        item {
+            MetricCard(
+                title = "Remote-routed runs",
+                value = remoteRuns.toString(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(text = "Report export", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Generate a shareable summary from saved run history. This is a reporting/export preview only; it does not claim stronger runtime verification than the captured runs actually provide.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    SelectorSection(title = "Format") {
+                        ReportExportFormat.entries.forEach { format ->
+                            FilterChip(
+                                selected = selectedFormat == format,
+                                onClick = { selectedFormatIndex = format.ordinal },
+                                label = { Text(format.name) },
+                            )
+                        }
+                    }
+                    SelectorSection(title = "Run filter") {
+                        HistoryReportFilter.entries.forEach { filter ->
+                            FilterChip(
+                                selected = selectedFilter == filter,
+                                onClick = { selectedFilterIndex = filter.ordinal },
+                                label = { Text(filter.label) },
+                            )
+                        }
+                    }
+                    SelectorSection(title = "Window size") {
+                        windowSizes.forEachIndexed { index, count ->
+                            FilterChip(
+                                selected = selectedWindowIndex == index,
+                                onClick = { selectedWindowIndex = index },
+                                label = { Text("Latest $count") },
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Filtered runs included: ${filteredRuns.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = { clipboardManager.setText(AnnotatedString(reportText)) }) {
+                            Text("Copy report")
+                        }
+                    }
+                    PreviewCard(title = "Report preview", body = previewText)
+                }
+            }
         }
         items(runs, key = { it.id }) { run ->
             RunCard(run = run)
@@ -693,9 +801,21 @@ private fun SettingsScreen(
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Remote capability report", style = MaterialTheme.typography.titleMedium)
+                    capabilities.executorLabel?.takeIf(String::isNotBlank)?.let {
+                        Text(text = "executor label: $it")
+                    }
                     Text(text = "nmap available: ${capabilities.nmapAvailable}")
+                    capabilities.nmapVersion?.takeIf(String::isNotBlank)?.let {
+                        Text(text = "nmap version: $it")
+                    }
                     Text(text = "ncat available: ${capabilities.ncatAvailable}")
+                    capabilities.ncatVersion?.takeIf(String::isNotBlank)?.let {
+                        Text(text = "ncat version: $it")
+                    }
                     Text(text = "nping available: ${capabilities.npingAvailable}")
+                    capabilities.npingVersion?.takeIf(String::isNotBlank)?.let {
+                        Text(text = "nping version: $it")
+                    }
                     Text(text = "privileged raw access: ${capabilities.privileged}")
                     Text(text = "requires authentication: ${capabilities.requiresAuthentication}")
                     Text(text = "max targets per request: ${capabilities.maxTargetsPerRequest}")
@@ -818,6 +938,22 @@ private fun RunCard(run: ScanRunSummary) {
                 },
                 style = MaterialTheme.typography.bodySmall,
             )
+            if (!run.requestId.isNullOrBlank() || !run.executorLabel.isNullOrBlank()) {
+                Text(
+                    text = buildString {
+                        run.executorLabel?.takeIf(String::isNotBlank)?.let {
+                            append("Executor ")
+                            append(it)
+                        }
+                        run.requestId?.takeIf(String::isNotBlank)?.let {
+                            if (isNotEmpty()) append(" • ")
+                            append("Request ")
+                            append(it)
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Card(colors = CardDefaults.cardColors(containerColor = changeContainerColor)) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
