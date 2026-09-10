@@ -101,6 +101,10 @@ This project chooses correctness over false claims:
 - Capability refresh from the backend
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
+- Shared **result parsing** for richer summaries:
+  - Nmap host/up/open-port extraction from standard output
+  - Nping packet and RTT summary extraction
+  - Ncat connection/output highlight extraction
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -189,6 +193,18 @@ export NPING_BINARY="nping"
 6. Review the live effective-argument preview and command preview.
 7. Save the profile and run it manually or let automation trigger it.
 8. Inspect status, logs, and run-to-run deltas in **History**.
+
+## Result summaries
+
+The app now derives lightweight summaries from captured tool output to make repeated scans easier to inspect.
+
+### Current parsing behavior
+- **Nmap**: extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, and completion duration from normal stdout when present.
+- **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
+- **Ncat**: surfaces connection target and first output line when present.
+
+### Important limitation
+These summaries are **heuristic parsers of captured output**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
 

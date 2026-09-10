@@ -99,6 +99,7 @@ This document records development observations, constraints, trade-offs, and lea
 - Structured UI controls are valuable even for expert tools when they generate a deterministic, auditable command line instead of hiding it.
 - For security tooling, “better UX” often means fewer ambiguous states and more transparent policy enforcement.
 - Change awareness matters: recurring scans become significantly more useful when the operator can immediately see whether the latest run materially differs from the previous one.
+- Lightweight output parsing is useful, but it must be described honestly as heuristic unless the implementation is driven by a guaranteed structured output format.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

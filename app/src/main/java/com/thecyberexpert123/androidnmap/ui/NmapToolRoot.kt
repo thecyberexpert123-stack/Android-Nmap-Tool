@@ -686,10 +686,48 @@ private fun RunCard(run: ScanRunSummary) {
             Text(text = run.profileName, style = MaterialTheme.typography.titleMedium)
             Text(text = "${run.status.name} via ${run.route.name} • ${run.trigger.name}")
             Card(colors = CardDefaults.cardColors(containerColor = changeContainerColor)) {
-                Text(
-                    text = run.changeSummary,
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall,
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = run.changeSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        text = run.parsedSummary.overview,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+            if (run.parsedSummary.highlights.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    run.parsedSummary.highlights.forEach { highlight ->
+                        Text(
+                            text = "• $highlight",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            if (run.parsedSummary.portFindings.isNotEmpty()) {
+                PreviewCard(
+                    title = "Parsed findings",
+                    body = run.parsedSummary.portFindings.joinToString(separator = "\n") { finding ->
+                        buildString {
+                            finding.host?.takeIf(String::isNotBlank)?.let {
+                                append(it)
+                                append(' ')
+                            }
+                            append(finding.endpointLabel)
+                            append(' ')
+                            append(finding.state)
+                            append(' ')
+                            append(finding.service)
+                            if (finding.details.isNotBlank()) {
+                                append(" — ")
+                                append(finding.details)
+                            }
+                        }
+                    },
                 )
             }
             Text(

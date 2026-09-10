@@ -59,6 +59,10 @@ The format is intentionally simple and incremental so each agent session can app
   - optional regex-based target allowlisting,
   - bounded stdout/stderr capture,
   - expanded capability reporting for authentication requirement, target policy, and output limits.
+- Added shared **tool-output parsing** and richer history summaries:
+  - Nmap host/open-port extraction
+  - Nping packet/RTT summary extraction
+  - Ncat connection/session highlight extraction
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

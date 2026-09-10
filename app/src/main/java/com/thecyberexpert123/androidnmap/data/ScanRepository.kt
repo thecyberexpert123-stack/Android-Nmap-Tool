@@ -12,6 +12,8 @@ import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
+import com.thecyberexpert123.nmaptool.contract.ToolResultParser
+import com.thecyberexpert123.nmaptool.contract.ToolResultSummary
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.ValidationIssue
 import com.thecyberexpert123.nmaptool.contract.ValidationResult
@@ -74,6 +76,7 @@ data class ScanRunSummary(
     val finishedAtEpochMillis: Long,
     val changeKind: RunChangeKind,
     val changeSummary: String,
+    val parsedSummary: ToolResultSummary,
 )
 
 class DefaultScanRepository(
@@ -120,13 +123,15 @@ class DefaultScanRepository(
             val changeByRunId = buildRunChangeMap(runs)
             runs.map { entity ->
                 val change = changeByRunId.getValue(entity.id)
+                val tool = ToolType.valueOf(entity.toolType)
+                val status = RunStatus.valueOf(entity.status)
                 ScanRunSummary(
                     id = entity.id,
                     profileId = entity.profileId,
                     profileName = entity.profileName,
-                    tool = ToolType.valueOf(entity.toolType),
+                    tool = tool,
                     route = ExecutionRoute.valueOf(entity.route),
-                    status = RunStatus.valueOf(entity.status),
+                    status = status,
                     trigger = RunTrigger.valueOf(entity.triggerSource),
                     commandPreview = entity.commandPreview,
                     exitCode = entity.exitCode,
@@ -137,6 +142,13 @@ class DefaultScanRepository(
                     finishedAtEpochMillis = entity.finishedAtEpochMillis,
                     changeKind = change.kind,
                     changeSummary = change.summary,
+                    parsedSummary = ToolResultParser.parse(
+                        tool = tool,
+                        status = status,
+                        exitCode = entity.exitCode,
+                        stdout = entity.stdout,
+                        stderr = entity.stderr,
+                    ),
                 )
             }
         }
