@@ -78,6 +78,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Added remote capability version/detail reporting for executor label plus detected `nmap`, `ncat`, and `nping` version banners when available.
 - Added Room schema support for persisting remote request IDs and executor labels across saved history.
 - Removed a duplicate `CommandPreview` definition from `common-contract` to resolve an obvious compile-time symbol conflict in source.
+- Added shared execution-guidance analysis for route readiness, capability freshness, and privilege-sensitive scan caveats.
+- Added builder UI guidance cards that surface likely route, blockers, warnings, notes, and capability-check freshness before launch.
+- Added capability-state staleness tracking when remote settings are edited after a refresh.
+- Added shared test coverage for execution-guidance decisions.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

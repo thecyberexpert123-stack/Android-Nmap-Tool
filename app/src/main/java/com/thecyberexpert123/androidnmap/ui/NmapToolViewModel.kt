@@ -13,6 +13,9 @@ import com.thecyberexpert123.androidnmap.work.AutomationScheduler
 import com.thecyberexpert123.nmaptool.contract.ArgumentTokenizer
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
+import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
+import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceAdvisor
+import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
@@ -54,6 +57,7 @@ data class ScanBuilderUiState(
     val effectiveArguments: String = "",
     val commandPreview: String = "",
     val builderIssues: List<String> = emptyList(),
+    val executionGuidance: ExecutionGuidance = ExecutionGuidance(),
 )
 
 data class RemoteSettingsUiState(
@@ -65,6 +69,8 @@ data class CapabilityUiState(
     val loading: Boolean = false,
     val capabilities: RemoteCapabilitiesResponse? = null,
     val error: String? = null,
+    val lastCheckedAtEpochMillis: Long? = null,
+    val stale: Boolean = false,
 )
 
 class NmapToolViewModel(
@@ -87,14 +93,14 @@ class NmapToolViewModel(
         initialValue = emptyList(),
     )
 
-    private val _builderState = MutableStateFlow(recalculate(ScanBuilderUiState()))
-    val builderState: StateFlow<ScanBuilderUiState> = _builderState.asStateFlow()
-
     private val _remoteSettings = MutableStateFlow(RemoteSettingsUiState())
     val remoteSettings: StateFlow<RemoteSettingsUiState> = _remoteSettings.asStateFlow()
 
     private val _capabilityState = MutableStateFlow(CapabilityUiState())
     val capabilityState: StateFlow<CapabilityUiState> = _capabilityState.asStateFlow()
+
+    private val _builderState = MutableStateFlow(recalculate(ScanBuilderUiState()))
+    val builderState: StateFlow<ScanBuilderUiState> = _builderState.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -105,6 +111,7 @@ class NmapToolViewModel(
             baseUrl = savedSettings.baseUrl,
             bearerToken = savedSettings.bearerToken,
         )
+        refreshBuilderDerivedState()
     }
 
     fun consumeMessage() {
@@ -284,10 +291,14 @@ class NmapToolViewModel(
 
     fun updateRemoteBaseUrl(value: String) {
         _remoteSettings.update { it.copy(baseUrl = value) }
+        markCapabilitiesStale()
+        refreshBuilderDerivedState()
     }
 
     fun updateRemoteToken(value: String) {
         _remoteSettings.update { it.copy(bearerToken = value) }
+        markCapabilitiesStale()
+        refreshBuilderDerivedState()
     }
 
     fun saveRemoteSettings() {
@@ -302,6 +313,7 @@ class NmapToolViewModel(
                     refreshCapabilitiesForSettings(settings)
                 } else {
                     _capabilityState.value = CapabilityUiState()
+                    refreshBuilderDerivedState()
                     null
                 }
                 _message.value = capabilityRefreshError?.let {
@@ -329,19 +341,30 @@ class NmapToolViewModel(
         settings: RemoteEndpointSettings,
         publishMessageOnFailure: Boolean = false,
     ): String? {
-        _capabilityState.value = CapabilityUiState(loading = true)
+        val refreshStartedAt = System.currentTimeMillis()
+        val previous = capabilityState.value
+        _capabilityState.value = previous.copy(loading = true, error = null)
         var failureMessage: String? = null
         repository.fetchRemoteCapabilities(settings)
             .onSuccess { capabilities ->
-                _capabilityState.value = CapabilityUiState(capabilities = capabilities)
+                _capabilityState.value = CapabilityUiState(
+                    capabilities = capabilities,
+                    lastCheckedAtEpochMillis = refreshStartedAt,
+                    stale = false,
+                )
             }
             .onFailure { error ->
                 failureMessage = error.message ?: "Failed to load remote capabilities."
-                _capabilityState.value = CapabilityUiState(error = failureMessage)
+                _capabilityState.value = CapabilityUiState(
+                    error = failureMessage,
+                    lastCheckedAtEpochMillis = refreshStartedAt,
+                    stale = false,
+                )
                 if (publishMessageOnFailure) {
                     _message.value = failureMessage
                 }
             }
+        refreshBuilderDerivedState()
         return failureMessage
     }
 
@@ -400,6 +423,20 @@ class NmapToolViewModel(
         _builderState.update { current -> recalculate(transform(current)) }
     }
 
+    private fun refreshBuilderDerivedState() {
+        _builderState.update(::recalculate)
+    }
+
+    private fun markCapabilitiesStale() {
+        _capabilityState.update { current ->
+            if (current.capabilities == null && current.error == null && current.lastCheckedAtEpochMillis == null) {
+                current
+            } else {
+                current.copy(stale = true)
+            }
+        }
+    }
+
     private fun recalculate(state: ScanBuilderUiState): ScanBuilderUiState {
         val issues = mutableListOf<String>()
         val effectiveArguments = when (state.tool) {
@@ -429,6 +466,7 @@ class NmapToolViewModel(
             }
         }
 
+        val effectiveArgumentTokens = runCatching { ArgumentTokenizer.tokenize(effectiveArguments) }.getOrDefault(emptyList())
         val commandPreview = if (effectiveArguments.isBlank()) {
             state.tool.binaryName + state.rawTargets.trim().let { suffix -> if (suffix.isBlank()) "" else " $suffix" }
         } else {
@@ -436,7 +474,7 @@ class NmapToolViewModel(
             runCatching {
                 CommandPreview.render(
                     tool = state.tool,
-                    arguments = ArgumentTokenizer.tokenize(effectiveArguments),
+                    arguments = effectiveArgumentTokens,
                     targets = targets,
                 )
             }.getOrDefault(
@@ -445,11 +483,32 @@ class NmapToolViewModel(
                     .joinToString(" "),
             )
         }
+        val capabilitySnapshot = capabilityState.value
+        val baseGuidance = ExecutionGuidanceAdvisor.analyze(
+            tool = state.tool,
+            executionPreference = state.executionPreference,
+            arguments = effectiveArgumentTokens,
+            remoteConfigured = remoteSettings.value.baseUrl.isNotBlank(),
+            remoteCapabilities = capabilitySnapshot.capabilities,
+            remoteCapabilitiesStale = capabilitySnapshot.stale,
+            localExecutionSupported = false,
+            scheduleEnabled = state.scheduleEnabled,
+        )
+        val executionGuidance = if (issues.isNotEmpty()) {
+            baseGuidance.copy(
+                status = ExecutionGuidanceStatus.BLOCKED,
+                summary = "Resolve builder issues before execution readiness can be trusted.",
+                blockers = (listOf("Resolve the builder issues shown below.") + baseGuidance.blockers).distinct(),
+            )
+        } else {
+            baseGuidance
+        }
 
         return state.copy(
             effectiveArguments = effectiveArguments,
             commandPreview = commandPreview,
             builderIssues = issues.distinct(),
+            executionGuidance = executionGuidance,
         )
     }
 

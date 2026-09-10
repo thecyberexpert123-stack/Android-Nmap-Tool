@@ -54,6 +54,8 @@ import com.thecyberexpert123.androidnmap.data.RunChangeKind
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.androidnmap.reporting.buildExecutionReport
+import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
+import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.ResultParseSource
@@ -151,6 +153,7 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
 
             AppTab.BUILDER -> BuilderScreen(
                 state = builderState,
+                capabilityState = capabilityState,
                 onNameChanged = viewModel::updateName,
                 onTargetsChanged = viewModel::updateTargets,
                 onNotesChanged = viewModel::updateNotes,
@@ -328,6 +331,7 @@ private fun DashboardScreen(
 @Composable
 private fun BuilderScreen(
     state: ScanBuilderUiState,
+    capabilityState: CapabilityUiState,
     onNameChanged: (String) -> Unit,
     onTargetsChanged: (String) -> Unit,
     onNotesChanged: (String) -> Unit,
@@ -448,6 +452,10 @@ private fun BuilderScreen(
 
         PreviewCard(title = "Effective arguments", body = state.effectiveArguments.ifBlank { "No arguments selected." })
         PreviewCard(title = "Command preview", body = state.commandPreview)
+        ExecutionGuidanceCard(
+            guidance = state.executionGuidance,
+            capabilityState = capabilityState,
+        )
 
         if (state.builderIssues.isNotEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
@@ -589,6 +597,71 @@ private fun StructuredNmapOptionsCard(
                 supportingText = { Text("Example: default,safe or http-title") },
                 singleLine = true,
             )
+        }
+    }
+}
+
+@Composable
+private fun ExecutionGuidanceCard(
+    guidance: ExecutionGuidance,
+    capabilityState: CapabilityUiState,
+) {
+    val containerColor = when (guidance.status) {
+        ExecutionGuidanceStatus.READY -> MaterialTheme.colorScheme.secondaryContainer
+        ExecutionGuidanceStatus.CAUTION -> MaterialTheme.colorScheme.tertiaryContainer
+        ExecutionGuidanceStatus.BLOCKED -> MaterialTheme.colorScheme.errorContainer
+    }
+    val contentColor = when (guidance.status) {
+        ExecutionGuidanceStatus.READY -> MaterialTheme.colorScheme.onSecondaryContainer
+        ExecutionGuidanceStatus.CAUTION -> MaterialTheme.colorScheme.onTertiaryContainer
+        ExecutionGuidanceStatus.BLOCKED -> MaterialTheme.colorScheme.onErrorContainer
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = "Execution guidance", style = MaterialTheme.typography.titleMedium)
+            Text(text = guidance.summary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(
+                text = "Likely route: ${guidance.likelyRoute?.name ?: "UNRESOLVED"}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
+                Text(
+                    text = if (capabilityState.stale) {
+                        "Capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
+                    } else {
+                        "Capabilities last checked ${formatTimestamp(checkedAt)}."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (capabilityState.loading) {
+                Text(text = "Refreshing remote capability data…", style = MaterialTheme.typography.bodySmall)
+            }
+            if (guidance.blockers.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Blockers", style = MaterialTheme.typography.titleSmall)
+                    guidance.blockers.forEach { blocker ->
+                        Text(text = "• $blocker", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (guidance.warnings.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Warnings", style = MaterialTheme.typography.titleSmall)
+                    guidance.warnings.forEach { warning ->
+                        Text(text = "• $warning", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (guidance.notes.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Notes", style = MaterialTheme.typography.titleSmall)
+                    guidance.notes.forEach { note ->
+                        Text(text = "• $note", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
     }
 }
@@ -796,6 +869,16 @@ private fun SettingsScreen(
             Button(onClick = onRefreshCapabilities) {
                 Text(if (capabilityState.loading) "Checking..." else "Refresh capabilities")
             }
+        }
+        capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
+            Text(
+                text = if (capabilityState.stale) {
+                    "Capability data is stale relative to unsaved settings changes. Last checked ${formatTimestamp(checkedAt)}."
+                } else {
+                    "Last capability check: ${formatTimestamp(checkedAt)}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         capabilityState.capabilities?.let { capabilities ->
             Card {

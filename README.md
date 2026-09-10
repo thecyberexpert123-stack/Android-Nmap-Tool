@@ -100,7 +100,9 @@ This project chooses correctness over false claims:
 - Remote executor settings with **Android Keystore-encrypted bearer token storage**
 - Capability refresh from the backend
 - Automatic capability re-check after saving remote executor settings
+- Capability staleness tracking when settings are edited after a refresh
 - Remote capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
+- Builder-side execution guidance that explains likely routing, blockers, warnings, and privileged-access caveats before a run is launched
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 - Dashboard insight cards for:
@@ -118,6 +120,7 @@ This project chooses correctness over false claims:
 - Profile and automation views now surface saved schedule cadence and the most recent run outcome for faster operator triage.
 - Run history now surfaces parse provenance, execution duration, observed-host counts, explicit capture-truncation warnings, and remote request/executor identifiers when available.
 - History now includes built-in **report export generation** with Markdown and CSV outputs derived from saved run history.
+- Builder guidance now warns when the current profile is likely to depend on remote execution, stale capability data, unavailable tool binaries, or privilege-sensitive scan modes.
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -236,12 +239,13 @@ The app now derives lightweight summaries from captured tool output to make repe
 ### Important limitation
 - XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
 - The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
+- Builder execution guidance is advisory. It improves honesty before execution, but it cannot prove that a given remote host, network path, or privilege-sensitive scan mode will succeed in every environment.
 - Exported Markdown/CSV reports reflect only the runs saved in local history; they are reporting artifacts, not a substitute for build/runtime verification or full raw upstream output retention.
 - Non-Nmap tool summaries and fallback text parsing remain **heuristic**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
 
-This project allows expert-style arguments, but it still blocks a narrow set of dangerous options on the remote executor.
+This project allows expert-style arguments, but it still blocks a narrow set of dangerous options on the remote executor. It also uses pre-run execution guidance in the Android builder to surface route assumptions and privilege-sensitive scan caveats before the operator launches a profile.
 
 ### Blocked examples
 - Nmap output file flags such as `-o*`

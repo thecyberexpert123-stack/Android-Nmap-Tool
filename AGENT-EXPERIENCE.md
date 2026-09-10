@@ -106,6 +106,8 @@ This document records development observations, constraints, trade-offs, and lea
 - Profile dashboards become more actionable when they combine configuration state, schedule cadence, and latest execution outcome instead of showing saved profiles as static objects.
 - Execution history becomes far more useful for real operations once each run carries correlation metadata such as executor labels and request IDs; otherwise screenshots and copied excerpts are hard to reconcile with backend-side investigation.
 - Static source review still matters when the sandbox cannot compile: in this pass, manual inspection exposed a duplicate `CommandPreview` object in the shared module that honest runtime-free verification had not previously surfaced.
+- Capability reports are easy to over-trust unless the product tracks freshness. Marking them stale after settings edits is a small UX detail that materially improves operational honesty.
+- Pre-run execution guidance is worth centralizing in shared logic rather than scattering ad-hoc warnings through Compose, because route assumptions and privilege caveats are domain rules, not just UI copy.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.
