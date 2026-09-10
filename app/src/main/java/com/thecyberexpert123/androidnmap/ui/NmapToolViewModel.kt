@@ -8,17 +8,21 @@ import com.thecyberexpert123.androidnmap.data.DefaultScanRepository
 import com.thecyberexpert123.androidnmap.data.EditableScanProfile
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
+import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSettingsBundle
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.work.AutomationScheduler
 import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.ArgumentTokenizer
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
+import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingAdvisor
+import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingCandidate
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceAdvisor
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutorCapabilityProfile
+import com.thecyberexpert123.nmaptool.contract.ExecutorNodeKind
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
@@ -26,7 +30,9 @@ import com.thecyberexpert123.nmaptool.contract.ScanPreset
 import com.thecyberexpert123.nmaptool.contract.StructuredNmapArgumentComposer
 import com.thecyberexpert123.nmaptool.contract.StructuredNmapOptions
 import com.thecyberexpert123.nmaptool.contract.TargetParser
+import com.thecyberexpert123.nmaptool.contract.TargetTopologyScope
 import com.thecyberexpert123.nmaptool.contract.ToolType
+import com.thecyberexpert123.nmaptool.contract.allTargetTopologyScopes
 import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -61,11 +67,18 @@ data class ScanBuilderUiState(
     val commandPreview: String = "",
     val builderIssues: List<String> = emptyList(),
     val executionGuidance: ExecutionGuidance = ExecutionGuidance(),
+    val delegatedExecutorContextLabel: String? = null,
+    val delegatedExecutorSelectionReason: String? = null,
+    val delegatedLastCheckedAtEpochMillis: Long? = null,
+    val delegatedCapabilitiesLoading: Boolean = false,
+    val delegatedCapabilitiesStale: Boolean = false,
 )
 
 data class RemoteSettingsUiState(
     val baseUrl: String = "",
     val bearerToken: String = "",
+    val lanAgentBaseUrl: String = "",
+    val lanAgentBearerToken: String = "",
 )
 
 data class CapabilityUiState(
@@ -74,6 +87,11 @@ data class CapabilityUiState(
     val error: String? = null,
     val lastCheckedAtEpochMillis: Long? = null,
     val stale: Boolean = false,
+    val lanAgentLoading: Boolean = false,
+    val lanAgentCapabilities: RemoteCapabilitiesResponse? = null,
+    val lanAgentError: String? = null,
+    val lanAgentLastCheckedAtEpochMillis: Long? = null,
+    val lanAgentStale: Boolean = false,
 )
 
 data class LocalCapabilityUiState(
@@ -126,10 +144,12 @@ class NmapToolViewModel(
     val message: StateFlow<String?> = _message.asStateFlow()
 
     init {
-        val savedSettings = repository.readRemoteSettings()
+        val savedSettings = repository.readDelegatedExecutorSettings()
         _remoteSettings.value = RemoteSettingsUiState(
-            baseUrl = savedSettings.baseUrl,
-            bearerToken = savedSettings.bearerToken,
+            baseUrl = savedSettings.primary.baseUrl,
+            bearerToken = savedSettings.primary.bearerToken,
+            lanAgentBaseUrl = savedSettings.lanAgent.baseUrl,
+            lanAgentBearerToken = savedSettings.lanAgent.bearerToken,
         )
         refreshBuilderDerivedState()
     }
@@ -315,34 +335,39 @@ class NmapToolViewModel(
 
     fun updateRemoteBaseUrl(value: String) {
         _remoteSettings.update { it.copy(baseUrl = value) }
-        markCapabilitiesStale()
+        markCapabilitiesStale(primary = true, lanAgent = false)
         refreshBuilderDerivedState()
     }
 
     fun updateRemoteToken(value: String) {
         _remoteSettings.update { it.copy(bearerToken = value) }
-        markCapabilitiesStale()
+        markCapabilitiesStale(primary = true, lanAgent = false)
+        refreshBuilderDerivedState()
+    }
+
+    fun updateLanAgentBaseUrl(value: String) {
+        _remoteSettings.update { it.copy(lanAgentBaseUrl = value) }
+        markCapabilitiesStale(primary = false, lanAgent = true)
+        refreshBuilderDerivedState()
+    }
+
+    fun updateLanAgentToken(value: String) {
+        _remoteSettings.update { it.copy(lanAgentBearerToken = value) }
+        markCapabilitiesStale(primary = false, lanAgent = true)
         refreshBuilderDerivedState()
     }
 
     fun saveRemoteSettings() {
         viewModelScope.launch {
-            val settings = RemoteEndpointSettings(
-                baseUrl = remoteSettings.value.baseUrl,
-                bearerToken = remoteSettings.value.bearerToken,
-            )
-            val result = repository.saveRemoteSettings(settings)
+            val settings = currentDelegatedSettingsBundle()
+            val result = repository.saveDelegatedExecutorSettings(settings)
             if (result.isValid) {
-                val capabilityRefreshError = if (settings.baseUrl.isNotBlank()) {
-                    refreshCapabilitiesForSettings(settings)
+                val capabilityRefreshErrors = refreshCapabilitiesForBundle(settings)
+                _message.value = if (capabilityRefreshErrors.isNotEmpty()) {
+                    "Delegated executor settings saved securely on-device, but some capability refreshes failed."
                 } else {
-                    _capabilityState.value = CapabilityUiState()
-                    refreshBuilderDerivedState()
-                    null
+                    "Delegated executor settings saved securely on-device."
                 }
-                _message.value = capabilityRefreshError?.let {
-                    "Delegated executor settings saved securely on-device, but capability refresh failed."
-                } ?: "Delegated executor settings saved securely on-device."
             } else {
                 _message.value = result.issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
             }
@@ -351,11 +376,8 @@ class NmapToolViewModel(
 
     fun refreshCapabilities() {
         viewModelScope.launch {
-            refreshCapabilitiesForSettings(
-                RemoteEndpointSettings(
-                    baseUrl = remoteSettings.value.baseUrl,
-                    bearerToken = remoteSettings.value.bearerToken,
-                ),
+            refreshCapabilitiesForBundle(
+                currentDelegatedSettingsBundle(),
                 publishMessageOnFailure = true,
             )
         }
@@ -372,34 +394,90 @@ class NmapToolViewModel(
         _message.value = "Refreshed Android-local capability snapshot."
     }
 
-    private suspend fun refreshCapabilitiesForSettings(
+    private suspend fun refreshCapabilitiesForBundle(
+        settings: DelegatedExecutorSettingsBundle,
+        publishMessageOnFailure: Boolean = false,
+    ): List<String> {
+        val errors = buildList {
+            refreshCapabilitiesForEndpoint(
+                settings = settings.primary,
+                lane = DelegatedCapabilityLane.PRIMARY,
+                publishMessageOnFailure = publishMessageOnFailure,
+            )?.let(::add)
+            refreshCapabilitiesForEndpoint(
+                settings = settings.lanAgent,
+                lane = DelegatedCapabilityLane.LAN_AGENT,
+                publishMessageOnFailure = publishMessageOnFailure,
+            )?.let(::add)
+        }
+        refreshBuilderDerivedState()
+        return errors
+    }
+
+    private suspend fun refreshCapabilitiesForEndpoint(
         settings: RemoteEndpointSettings,
+        lane: DelegatedCapabilityLane,
         publishMessageOnFailure: Boolean = false,
     ): String? {
+        if (settings.baseUrl.isBlank()) {
+            clearCapabilityLane(lane)
+            return null
+        }
+
         val refreshStartedAt = System.currentTimeMillis()
-        val previous = capabilityState.value
-        _capabilityState.value = previous.copy(loading = true, error = null)
+        _capabilityState.update { current ->
+            when (lane) {
+                DelegatedCapabilityLane.PRIMARY -> current.copy(loading = true, error = null)
+                DelegatedCapabilityLane.LAN_AGENT -> current.copy(lanAgentLoading = true, lanAgentError = null)
+            }
+        }
+
         var failureMessage: String? = null
         repository.fetchRemoteCapabilities(settings)
             .onSuccess { capabilities ->
-                _capabilityState.value = CapabilityUiState(
-                    capabilities = capabilities,
-                    lastCheckedAtEpochMillis = refreshStartedAt,
-                    stale = false,
-                )
+                _capabilityState.update { current ->
+                    when (lane) {
+                        DelegatedCapabilityLane.PRIMARY -> current.copy(
+                            loading = false,
+                            capabilities = capabilities,
+                            error = null,
+                            lastCheckedAtEpochMillis = refreshStartedAt,
+                            stale = false,
+                        )
+                        DelegatedCapabilityLane.LAN_AGENT -> current.copy(
+                            lanAgentLoading = false,
+                            lanAgentCapabilities = capabilities,
+                            lanAgentError = null,
+                            lanAgentLastCheckedAtEpochMillis = refreshStartedAt,
+                            lanAgentStale = false,
+                        )
+                    }
+                }
             }
             .onFailure { error ->
-                failureMessage = error.message ?: "Failed to load remote capabilities."
-                _capabilityState.value = CapabilityUiState(
-                    error = failureMessage,
-                    lastCheckedAtEpochMillis = refreshStartedAt,
-                    stale = false,
-                )
+                failureMessage = error.message ?: "Failed to load delegated executor capabilities."
+                _capabilityState.update { current ->
+                    when (lane) {
+                        DelegatedCapabilityLane.PRIMARY -> current.copy(
+                            loading = false,
+                            capabilities = null,
+                            error = failureMessage,
+                            lastCheckedAtEpochMillis = refreshStartedAt,
+                            stale = false,
+                        )
+                        DelegatedCapabilityLane.LAN_AGENT -> current.copy(
+                            lanAgentLoading = false,
+                            lanAgentCapabilities = null,
+                            lanAgentError = failureMessage,
+                            lanAgentLastCheckedAtEpochMillis = refreshStartedAt,
+                            lanAgentStale = false,
+                        )
+                    }
+                }
                 if (publishMessageOnFailure) {
                     _message.value = failureMessage
                 }
             }
-        refreshBuilderDerivedState()
         return failureMessage
     }
 
@@ -462,14 +540,78 @@ class NmapToolViewModel(
         _builderState.update(::recalculate)
     }
 
-    private fun markCapabilitiesStale() {
+    private fun currentDelegatedSettingsBundle(): DelegatedExecutorSettingsBundle =
+        DelegatedExecutorSettingsBundle(
+            primary = RemoteEndpointSettings(
+                baseUrl = remoteSettings.value.baseUrl,
+                bearerToken = remoteSettings.value.bearerToken,
+            ),
+            lanAgent = RemoteEndpointSettings(
+                baseUrl = remoteSettings.value.lanAgentBaseUrl,
+                bearerToken = remoteSettings.value.lanAgentBearerToken,
+            ),
+        )
+
+    private fun clearCapabilityLane(lane: DelegatedCapabilityLane) {
         _capabilityState.update { current ->
-            if (current.capabilities == null && current.error == null && current.lastCheckedAtEpochMillis == null) {
-                current
-            } else {
-                current.copy(stale = true)
+            when (lane) {
+                DelegatedCapabilityLane.PRIMARY -> current.copy(
+                    loading = false,
+                    capabilities = null,
+                    error = null,
+                    lastCheckedAtEpochMillis = null,
+                    stale = false,
+                )
+                DelegatedCapabilityLane.LAN_AGENT -> current.copy(
+                    lanAgentLoading = false,
+                    lanAgentCapabilities = null,
+                    lanAgentError = null,
+                    lanAgentLastCheckedAtEpochMillis = null,
+                    lanAgentStale = false,
+                )
             }
         }
+    }
+
+    private fun markCapabilitiesStale(primary: Boolean, lanAgent: Boolean) {
+        _capabilityState.update { current ->
+            current.copy(
+                stale = if (primary && (current.capabilities != null || current.error != null || current.lastCheckedAtEpochMillis != null)) true else current.stale,
+                lanAgentStale = if (lanAgent && (current.lanAgentCapabilities != null || current.lanAgentError != null || current.lanAgentLastCheckedAtEpochMillis != null)) true else current.lanAgentStale,
+            )
+        }
+    }
+
+    private fun delegatedCandidate(
+        id: String,
+        label: String,
+        configured: Boolean,
+        capabilities: RemoteCapabilitiesResponse?,
+        stale: Boolean,
+        fallbackKind: ExecutorNodeKind,
+    ): DelegatedExecutorRoutingCandidate = DelegatedExecutorRoutingCandidate(
+        id = id,
+        label = label,
+        configured = configured,
+        kind = capabilities?.executorNodeKind ?: fallbackKind,
+        allowedTargetScopes = capabilities?.allowedTargetScopes?.ifEmpty { allTargetTopologyScopes.toSet() }
+            ?: defaultTargetScopesForKind(fallbackKind),
+        capabilitiesFresh = capabilities != null && !stale,
+    )
+
+    private fun defaultTargetScopesForKind(kind: ExecutorNodeKind): Set<TargetTopologyScope> = when (kind) {
+        ExecutorNodeKind.LAN_AGENT -> setOf(
+            TargetTopologyScope.PRIVATE_LAN,
+            TargetTopologyScope.LINK_LOCAL,
+            TargetTopologyScope.LOOPBACK,
+            TargetTopologyScope.CARRIER_GRADE_NAT,
+            TargetTopologyScope.HOSTNAME_OR_UNRESOLVED,
+            TargetTopologyScope.UNKNOWN,
+        )
+        ExecutorNodeKind.REMOTE_NMAP,
+        ExecutorNodeKind.ANDROID_LOCAL,
+        ExecutorNodeKind.UNKNOWN,
+        -> allTargetTopologyScopes.toSet()
     }
 
     private fun recalculate(state: ScanBuilderUiState): ScanBuilderUiState {
@@ -520,14 +662,60 @@ class NmapToolViewModel(
         }
         val capabilitySnapshot = capabilityState.value
         val localCapabilitySnapshot = localCapabilityState.value.capabilities
+        val delegatedRoutingCandidates = buildList {
+            add(
+                delegatedCandidate(
+                    id = PRIMARY_EXECUTOR_CANDIDATE_ID,
+                    label = "Primary delegated executor",
+                    configured = remoteSettings.value.baseUrl.isNotBlank(),
+                    capabilities = capabilitySnapshot.capabilities,
+                    stale = capabilitySnapshot.stale,
+                    fallbackKind = ExecutorNodeKind.REMOTE_NMAP,
+                ),
+            )
+            add(
+                delegatedCandidate(
+                    id = LAN_AGENT_EXECUTOR_CANDIDATE_ID,
+                    label = "LAN agent",
+                    configured = remoteSettings.value.lanAgentBaseUrl.isNotBlank(),
+                    capabilities = capabilitySnapshot.lanAgentCapabilities,
+                    stale = capabilitySnapshot.lanAgentStale,
+                    fallbackKind = ExecutorNodeKind.LAN_AGENT,
+                ),
+            )
+        }
+        val delegatedSelection = DelegatedExecutorRoutingAdvisor.select(
+            targets = targets,
+            candidates = delegatedRoutingCandidates,
+        )
+        val selectedRemoteCapabilities = when (delegatedSelection?.candidateId) {
+            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentCapabilities
+            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.capabilities
+            else -> capabilitySnapshot.capabilities ?: capabilitySnapshot.lanAgentCapabilities
+        }
+        val selectedRemoteCapabilitiesStale = when (delegatedSelection?.candidateId) {
+            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentStale
+            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.stale
+            else -> capabilitySnapshot.stale || capabilitySnapshot.lanAgentStale
+        }
+        val selectedRemoteLastCheckedAt = when (delegatedSelection?.candidateId) {
+            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentLastCheckedAtEpochMillis
+            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lastCheckedAtEpochMillis
+            else -> capabilitySnapshot.lastCheckedAtEpochMillis ?: capabilitySnapshot.lanAgentLastCheckedAtEpochMillis
+        }
+        val selectedRemoteLoading = when (delegatedSelection?.candidateId) {
+            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentLoading
+            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.loading
+            else -> capabilitySnapshot.loading || capabilitySnapshot.lanAgentLoading
+        }
         val baseGuidance = ExecutionGuidanceAdvisor.analyze(
             tool = state.tool,
             targets = targets,
             executionPreference = state.executionPreference,
             arguments = effectiveArgumentTokens,
-            remoteConfigured = remoteSettings.value.baseUrl.isNotBlank(),
-            remoteCapabilities = capabilitySnapshot.capabilities,
-            remoteCapabilitiesStale = capabilitySnapshot.stale,
+            remoteConfigured = delegatedRoutingCandidates.any { it.configured },
+            remoteCapabilities = selectedRemoteCapabilities,
+            remoteCapabilitiesStale = selectedRemoteCapabilitiesStale,
             localCapabilities = localCapabilitySnapshot,
             scheduleEnabled = state.scheduleEnabled,
         )
@@ -546,6 +734,11 @@ class NmapToolViewModel(
             commandPreview = commandPreview,
             builderIssues = issues.distinct(),
             executionGuidance = executionGuidance,
+            delegatedExecutorContextLabel = delegatedSelection?.label,
+            delegatedExecutorSelectionReason = delegatedSelection?.reason,
+            delegatedLastCheckedAtEpochMillis = selectedRemoteLastCheckedAt,
+            delegatedCapabilitiesLoading = selectedRemoteLoading,
+            delegatedCapabilitiesStale = selectedRemoteCapabilitiesStale,
         )
     }
 
@@ -567,7 +760,15 @@ class NmapToolViewModel(
         val issues: List<String>,
     )
 
+    private enum class DelegatedCapabilityLane {
+        PRIMARY,
+        LAN_AGENT,
+    }
+
     companion object {
+        private const val PRIMARY_EXECUTOR_CANDIDATE_ID = "primary-delegated-executor"
+        private const val LAN_AGENT_EXECUTOR_CANDIDATE_ID = "delegated-lan-agent"
+
         fun factory(
             repository: DefaultScanRepository,
             automationScheduler: AutomationScheduler,

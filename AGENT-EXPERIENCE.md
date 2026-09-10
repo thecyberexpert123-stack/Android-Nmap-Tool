@@ -185,3 +185,32 @@ This document records development observations, constraints, trade-offs, and lea
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.
 - Honest capability modeling is essential. A trustworthy security tool must clearly distinguish what it can actually run from what it can only plan or simulate.
 - In mobile security tools, “full functionality” usually requires backend and policy design just as much as frontend work.
+
+## 2026-09-10 — Delegated LAN-agent support
+
+### Why this batch was the right next step
+- After the Android-local phase-C work, the next best improvement was not to further stretch stock-Android probing. It was to improve the **delegation model** so the app can route scans toward the right authorized executor for the target topology.
+- The product direction already treats scanning as distributed capability routing, so supporting a user-controlled LAN agent for private-network targets is more honest and more useful than pretending Wi-Fi presence gives the phone implicit packet-generation power.
+
+### What changed conceptually
+- I introduced explicit **target-topology classification** shared between Android and the backend.
+- I separated two delegated roles in the Android client:
+  - a **primary delegated executor** for general remote/Nmap-capable execution,
+  - an optional **LAN agent** intended for RFC1918/link-local/loopback-style targets near the target network.
+- I also promoted executor identity and target-scope policy into the shared contract so Android is not forced to assume every remote node has the same role.
+
+### Implementation notes
+- I kept the routing heuristic intentionally explainable: private-like targets bias toward the LAN agent, public-internet targets bias toward the general remote executor, and verified capability metadata can refine that choice.
+- Android settings storage now preserves two independent delegated endpoints with distinct Keystore-encrypted bearer tokens, which avoids conflating trust boundaries.
+- The backend can now advertise executor node kind, transport kind, allowed target scopes, and a topology summary while also rejecting execution requests whose targets fall outside the configured scope policy.
+- I updated the settings/dashboard/builder surfaces so operators can inspect both delegated nodes instead of seeing a single undifferentiated “remote” slot.
+
+### Trade-offs and constraints
+- Runtime delegated selection in the Android repository currently relies primarily on configured role/topology intent rather than a fully persisted node registry with freshness history. That keeps the change bounded while still improving actual routing behavior.
+- The topology classifier is intentionally conservative and mostly IP-shape based. Hostnames remain a softer category until an authorized executor resolves them in its own network context.
+- I still could not run Gradle or Android builds here because JDK 17 remains unavailable, so this batch required careful static review and targeted shared tests rather than claiming compile verification.
+
+### Lessons reinforced
+- Once multiple executors exist, “remote configured” is too coarse. The UI and contracts need to express **which executor** is expected to run a scan and why.
+- Capability freshness matters more when routing becomes topology-aware; otherwise the client can make confident-sounding but poorly grounded decisions.
+- Security-sensitive mobile tooling benefits from modeling trust boundaries explicitly, even for something as simple as storing two different API tokens.

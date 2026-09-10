@@ -41,6 +41,8 @@ class ExecutorCapabilitiesTest {
         assertTrue(profile.capabilities.any {
             it.id == ExecutionCapabilityId.RAW_PACKET_PROBES && it.level == ExecutionCapabilityLevel.UNSUPPORTED
         })
+        assertEquals(allTargetTopologyScopes, profile.supportedTargetScopes)
+        assertTrue(profile.topologySummary?.contains("Android network context") == true)
     }
 
     @Test
@@ -60,14 +62,24 @@ class ExecutorCapabilitiesTest {
             executorLabel = "lab-east-1",
             auditLoggingEnabled = true,
             maxConcurrentExecutions = 2,
+            executorNodeKind = ExecutorNodeKind.LAN_AGENT,
+            executorTransportKind = ExecutorTransportKind.PRIVATE_OVERLAY,
+            allowedTargetScopes = listOf(
+                TargetTopologyScope.PRIVATE_LAN,
+                TargetTopologyScope.LINK_LOCAL,
+                TargetTopologyScope.HOSTNAME_OR_UNRESOLVED,
+            ),
+            topologySummary = "LAN agent limited to private-topology targets.",
         )
 
         val profile = response.toExecutorCapabilityProfile()
 
-        assertEquals(ExecutorNodeKind.REMOTE_NMAP, profile.kind)
-        assertEquals(ExecutorTransportKind.HTTPS, profile.transport)
+        assertEquals(ExecutorNodeKind.LAN_AGENT, profile.kind)
+        assertEquals(ExecutorTransportKind.PRIVATE_OVERLAY, profile.transport)
         assertEquals("lab-east-1", profile.label)
         assertEquals(2, profile.maxConcurrentExecutions)
+        assertEquals(response.allowedTargetScopes, profile.supportedTargetScopes)
+        assertEquals(response.topologySummary, profile.topologySummary)
         assertNotNull(profile.capabilities.firstOrNull { it.id == ExecutionCapabilityId.NMAP_OS_DETECTION })
         assertTrue(profile.capabilities.any {
             it.id == ExecutionCapabilityId.STRUCTURED_NMAP_XML && it.level == ExecutionCapabilityLevel.SUPPORTED

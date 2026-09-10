@@ -101,6 +101,12 @@ The format is intentionally simple and incremental so each agent session can app
 - Added Android-local Nmap output lines for local device type, OS details, and fingerprint evidence so Phase C results propagate through saved history and parser highlights.
 - Updated Android-local planning, capability reporting, and UI wording so local `-O` is exposed as limited inference, not real raw-packet OS detection parity.
 - Added a shared execution-route selector and updated actual AUTO execution routing so delegated preference is now honored at run time when local execution is only a bounded fallback.
+- Added shared target-topology classification and delegated-executor routing helpers so private-network targets can prefer a user-controlled LAN agent over a general remote executor.
+- Expanded delegated executor capability metadata to report executor node kind, transport kind, allowed target scopes, and a topology summary across the shared contract, Android UI, and Ktor backend.
+- Added Android support for storing both a primary delegated executor and a separate LAN-agent endpoint with distinct Android Keystore-protected bearer tokens.
+- Updated Android builder/settings/dashboard flows so capability refresh, executor cards, and target-context messaging now cover both the primary delegated executor and an optional LAN agent.
+- Updated runtime delegated dispatch selection so target-topology-aware AUTO/REMOTE routing can choose the configured LAN agent for private-style targets without pretending Android itself gained raw-packet parity.
+- Added shared unit-test coverage for topology classification, delegated LAN-agent selection, and topology-aware capability-profile mapping.
 - Added shared test coverage for phase-C local `-O` planning/guidance and heuristic parsing of Android-local fingerprint-inference lines.
 
 ### Verified Environment Facts

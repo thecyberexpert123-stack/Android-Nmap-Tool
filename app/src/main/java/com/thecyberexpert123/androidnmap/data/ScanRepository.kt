@@ -2,18 +2,23 @@ package com.thecyberexpert123.androidnmap.data
 
 import com.thecyberexpert123.androidnmap.execution.LocalToolExecutor
 import com.thecyberexpert123.androidnmap.execution.RemoteExecutorClient
+import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSettingsBundle
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.settings.RemoteSettingsStore
 import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
+import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingAdvisor
+import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingCandidate
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.ExecutionRouteAdvisor
+import com.thecyberexpert123.nmaptool.contract.ExecutorNodeKind
 import com.thecyberexpert123.nmaptool.contract.InvocationFactory
 import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
+import com.thecyberexpert123.nmaptool.contract.TargetTopologyScope
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
 import com.thecyberexpert123.nmaptool.contract.ToolResultDeltaAnalyzer
 import com.thecyberexpert123.nmaptool.contract.ToolResultParser
@@ -21,6 +26,7 @@ import com.thecyberexpert123.nmaptool.contract.ToolResultSummary
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.ValidationIssue
 import com.thecyberexpert123.nmaptool.contract.ValidationResult
+import com.thecyberexpert123.nmaptool.contract.allTargetTopologyScopes
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -271,17 +277,32 @@ class DefaultScanRepository(
 
     fun readRemoteSettings(): RemoteEndpointSettings = remoteSettingsStore.read()
 
+    fun readDelegatedExecutorSettings(): DelegatedExecutorSettingsBundle = remoteSettingsStore.readBundle()
+
     fun readLocalCapabilities(): AndroidLocalCapabilities = localToolExecutor.capabilityProfile()
 
-    fun saveRemoteSettings(settings: RemoteEndpointSettings): ValidationResult<Unit> {
-        val normalizedUrl = settings.baseUrl.trim()
-        if (normalizedUrl.isNotBlank()) {
-            val issues = validateRemoteEndpoint(normalizedUrl)
-            if (issues.isNotEmpty()) {
-                return ValidationResult.failure(issues)
-            }
+    fun saveRemoteSettings(settings: RemoteEndpointSettings): ValidationResult<Unit> =
+        saveDelegatedExecutorSettings(
+            DelegatedExecutorSettingsBundle(
+                primary = settings,
+                lanAgent = remoteSettingsStore.readLanAgent(),
+            ),
+        )
+
+    fun saveDelegatedExecutorSettings(settings: DelegatedExecutorSettingsBundle): ValidationResult<Unit> {
+        val issues = buildList {
+            validateRemoteEndpointSettings(settings.primary, fieldPrefix = "primary").forEach(::add)
+            validateRemoteEndpointSettings(settings.lanAgent, fieldPrefix = "lanAgent").forEach(::add)
         }
-        remoteSettingsStore.save(settings.copy(baseUrl = normalizedUrl))
+        if (issues.isNotEmpty()) {
+            return ValidationResult.failure(issues)
+        }
+        remoteSettingsStore.saveBundle(
+            DelegatedExecutorSettingsBundle(
+                primary = settings.primary.copy(baseUrl = settings.primary.baseUrl.trim()),
+                lanAgent = settings.lanAgent.copy(baseUrl = settings.lanAgent.baseUrl.trim()),
+            ),
+        )
         return ValidationResult.success(Unit)
     }
 
@@ -330,21 +351,30 @@ class DefaultScanRepository(
         } else {
             val request = validation.value!!.request
             val localDecision = localToolExecutor.inspect(request)
-            val remoteSettings = remoteSettingsStore.read()
+            val delegatedSettings = remoteSettingsStore.readBundle()
+            val delegatedEndpoint = selectDelegatedExecutorSettings(
+                targets = request.targets,
+                settings = delegatedSettings,
+            )
             val selectedRoute = ExecutionRouteAdvisor.select(
                 executionPreference = request.executionPreference,
-                remoteConfigured = remoteSettings.baseUrl.isNotBlank(),
+                remoteConfigured = delegatedEndpoint != null,
                 localSupported = localDecision.canExecute,
                 preferDelegatedWhenAvailable = localDecision.preferDelegatedWhenAvailable,
             )
             when (selectedRoute) {
                 ExecutionRoute.LOCAL -> localToolExecutor.execute(request)
-                ExecutionRoute.REMOTE -> remoteExecutorClient.execute(remoteSettings, request)
+                ExecutionRoute.REMOTE -> delegatedEndpoint?.let { remoteExecutorClient.execute(it, request) }
+                    ?: buildFailureResponse(
+                        route = ExecutionRoute.BLOCKED,
+                        commandPreview = validation.value.commandPreview,
+                        message = "Delegated execution was requested, but no matching delegated executor is configured for the current target topology.",
+                    )
                 ExecutionRoute.BLOCKED, null -> when (request.executionPreference) {
                     ExecutionPreference.REMOTE_ONLY -> buildFailureResponse(
                         route = ExecutionRoute.BLOCKED,
                         commandPreview = validation.value.commandPreview,
-                        message = "Delegated execution was requested, but no delegated executor base URL is configured.",
+                        message = "Delegated execution was requested, but no matching delegated executor is configured for the current target topology.",
                     )
 
                     ExecutionPreference.LOCAL_ONLY,
@@ -415,7 +445,72 @@ class DefaultScanRepository(
         message = message,
     )
 
-    private fun validateRemoteEndpoint(baseUrl: String): List<ValidationIssue> {
+    private fun selectDelegatedExecutorSettings(
+        targets: List<String>,
+        settings: DelegatedExecutorSettingsBundle,
+    ): RemoteEndpointSettings? {
+        val selection = DelegatedExecutorRoutingAdvisor.select(
+            targets = targets,
+            candidates = listOf(
+                delegatedCandidate(
+                    id = "primary",
+                    label = "Primary delegated executor",
+                    settings = settings.primary,
+                    kind = ExecutorNodeKind.REMOTE_NMAP,
+                ),
+                delegatedCandidate(
+                    id = "lan-agent",
+                    label = "LAN agent",
+                    settings = settings.lanAgent,
+                    kind = ExecutorNodeKind.LAN_AGENT,
+                ),
+            ),
+        ) ?: return null
+        return when (selection.candidateId) {
+            "lan-agent" -> settings.lanAgent.takeIf { it.baseUrl.isNotBlank() }
+            else -> settings.primary.takeIf { it.baseUrl.isNotBlank() }
+        }
+    }
+
+    private fun delegatedCandidate(
+        id: String,
+        label: String,
+        settings: RemoteEndpointSettings,
+        kind: ExecutorNodeKind,
+    ): DelegatedExecutorRoutingCandidate = DelegatedExecutorRoutingCandidate(
+        id = id,
+        label = label,
+        configured = settings.baseUrl.isNotBlank(),
+        kind = kind,
+        allowedTargetScopes = when (kind) {
+            ExecutorNodeKind.LAN_AGENT -> setOf(
+                TargetTopologyScope.PRIVATE_LAN,
+                TargetTopologyScope.LINK_LOCAL,
+                TargetTopologyScope.LOOPBACK,
+                TargetTopologyScope.CARRIER_GRADE_NAT,
+                TargetTopologyScope.HOSTNAME_OR_UNRESOLVED,
+                TargetTopologyScope.UNKNOWN,
+            )
+            ExecutorNodeKind.REMOTE_NMAP,
+            ExecutorNodeKind.ANDROID_LOCAL,
+            ExecutorNodeKind.UNKNOWN,
+            -> allTargetTopologyScopes.toSet()
+        },
+        capabilitiesFresh = false,
+    )
+
+    private fun validateRemoteEndpointSettings(
+        settings: RemoteEndpointSettings,
+        fieldPrefix: String,
+    ): List<ValidationIssue> {
+        val normalizedUrl = settings.baseUrl.trim()
+        if (normalizedUrl.isBlank()) {
+            return emptyList()
+        }
+        return validateRemoteEndpoint(normalizedUrl, fieldPrefix)
+    }
+
+    private fun validateRemoteEndpoint(baseUrl: String, fieldPrefix: String = ""): List<ValidationIssue> {
         val issues = mutableListOf<ValidationIssue>()
         runCatching {
             val uri = URI(baseUrl)
@@ -423,7 +518,7 @@ class DefaultScanRepository(
             require(!uri.host.isNullOrBlank())
         }.onFailure {
             issues += ValidationIssue(
-                field = "baseUrl",
+                field = if (fieldPrefix.isBlank()) "baseUrl" else "$fieldPrefix.baseUrl",
                 message = "Remote executor URL must use http/https and include a host.",
             )
         }

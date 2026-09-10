@@ -71,6 +71,7 @@ import com.thecyberexpert123.nmaptool.contract.ExecutorTransportKind
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ResultParseSource
+import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.ReportExportFormat
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
@@ -213,6 +214,8 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 localCapabilityState = localCapabilityState,
                 onBaseUrlChanged = viewModel::updateRemoteBaseUrl,
                 onTokenChanged = viewModel::updateRemoteToken,
+                onLanAgentBaseUrlChanged = viewModel::updateLanAgentBaseUrl,
+                onLanAgentTokenChanged = viewModel::updateLanAgentToken,
                 onSave = viewModel::saveRemoteSettings,
                 onRefreshCapabilities = viewModel::refreshCapabilities,
                 onRefreshLocalCapabilities = viewModel::refreshLocalCapabilities,
@@ -258,7 +261,7 @@ private fun DashboardScreen(
     val changedRuns = recentRuns.count { it.newOpenPorts.isNotEmpty() || it.closedPorts.isNotEmpty() }
     val scheduledProfiles = profiles.count { it.scheduleEnabled }
     val failedProfiles = profiles.count { it.lastRunStatus == RunStatus.FAILED }
-    val remoteConfigured = remoteSettings.baseUrl.isNotBlank()
+    val remoteConfigured = remoteSettings.baseUrl.isNotBlank() || remoteSettings.lanAgentBaseUrl.isNotBlank()
 
     LazyColumn(
         modifier = Modifier
@@ -294,7 +297,7 @@ private fun DashboardScreen(
             ) {
                 MetricCard(title = "Scheduled profiles", value = scheduledProfiles.toString(), modifier = Modifier.weight(1f))
                 MetricCard(title = "Profiles with failed last run", value = failedProfiles.toString(), modifier = Modifier.weight(1f))
-                MetricCard(title = "Delegated executor configured", value = if (remoteConfigured) "Yes" else "No", modifier = Modifier.weight(1f))
+                MetricCard(title = "Delegated executors configured", value = if (remoteConfigured) "Yes" else "No", modifier = Modifier.weight(1f))
             }
         }
         item {
@@ -304,7 +307,14 @@ private fun DashboardScreen(
                     Text(
                         text = "This app now treats scanning as capability-aware execution routing: Android-local socket probing stays on-device, while raw/fuller Nmap features are delegated to a legitimate executor that actually has them.",
                     )
-                    Text(text = if (remoteConfigured) "Delegated executor base URL is configured." else "Delegated executor base URL is not configured yet.")
+                    Text(
+                        text = when {
+                            remoteSettings.baseUrl.isNotBlank() && remoteSettings.lanAgentBaseUrl.isNotBlank() -> "Primary delegated executor and LAN agent are both configured."
+                            remoteSettings.baseUrl.isNotBlank() -> "Primary delegated executor is configured."
+                            remoteSettings.lanAgentBaseUrl.isNotBlank() -> "LAN agent is configured without a primary delegated executor."
+                            else -> "No delegated executor is configured yet."
+                        },
+                    )
                     Text(
                         text = if (localCapabilityState.capabilities.networkAvailable) {
                             "Android-local engine sees an active network: ${localCapabilityState.capabilities.activeNetworkSummary.orEmpty()}"
@@ -313,15 +323,28 @@ private fun DashboardScreen(
                         },
                     )
                     capabilityState.capabilities?.executorLabel?.takeIf(String::isNotBlank)?.let { label ->
-                        Text(text = "Connected delegated executor label: $label")
+                        Text(text = "Primary delegated executor label: $label")
+                    }
+                    capabilityState.lanAgentCapabilities?.executorLabel?.takeIf(String::isNotBlank)?.let { label ->
+                        Text(text = "LAN agent label: $label")
                     }
                     capabilityState.error?.takeIf(String::isNotBlank)?.let { error ->
-                        Text(text = "Latest delegated capability check error: $error", color = MaterialTheme.colorScheme.error)
+                        Text(text = "Latest primary delegated capability check error: $error", color = MaterialTheme.colorScheme.error)
+                    }
+                    capabilityState.lanAgentError?.takeIf(String::isNotBlank)?.let { error ->
+                        Text(text = "Latest LAN-agent capability check error: $error", color = MaterialTheme.colorScheme.error)
                     }
                     ExecutorCapabilityProfileCard(profile = localCapabilityState.executorProfile)
                     capabilityState.capabilities?.let { remoteCapabilities ->
                         ExecutorCapabilityProfileCard(
                             profile = remoteCapabilities.executorProfile ?: remoteCapabilities.toExecutorCapabilityProfile(),
+                            subtitle = "Primary delegated executor",
+                        )
+                    }
+                    capabilityState.lanAgentCapabilities?.let { remoteCapabilities ->
+                        ExecutorCapabilityProfileCard(
+                            profile = remoteCapabilities.executorProfile ?: remoteCapabilities.toExecutorCapabilityProfile(),
+                            subtitle = "Delegated LAN agent",
                         )
                     }
                     Text(
@@ -488,6 +511,32 @@ private fun BuilderScreen(
             guidance = state.executionGuidance,
             capabilityState = capabilityState,
         )
+        state.delegatedExecutorContextLabel?.let { label ->
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(text = "Delegated executor routing", style = MaterialTheme.typography.titleMedium)
+                    Text(text = "Selected delegated executor: $label")
+                    state.delegatedExecutorSelectionReason?.let { reason ->
+                        Text(text = reason, style = MaterialTheme.typography.bodySmall)
+                    }
+                    state.delegatedLastCheckedAtEpochMillis?.let { checkedAt ->
+                        Text(
+                            text = buildString {
+                                append("Capability snapshot: ")
+                                append(formatTimestamp(checkedAt))
+                                if (state.delegatedCapabilitiesStale) {
+                                    append(" (stale)")
+                                }
+                                if (state.delegatedCapabilitiesLoading) {
+                                    append(" • refresh in progress")
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
 
         if (state.builderIssues.isNotEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
@@ -666,15 +715,25 @@ private fun ExecutionGuidanceCard(
             capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
                 Text(
                     text = if (capabilityState.stale) {
-                        "Delegated capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
+                        "Primary delegated capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
                     } else {
-                        "Delegated capabilities last checked ${formatTimestamp(checkedAt)}."
+                        "Primary delegated capabilities last checked ${formatTimestamp(checkedAt)}."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (capabilityState.loading) {
-                Text(text = "Refreshing remote capability data…", style = MaterialTheme.typography.bodySmall)
+            capabilityState.lanAgentLastCheckedAtEpochMillis?.let { checkedAt ->
+                Text(
+                    text = if (capabilityState.lanAgentStale) {
+                        "LAN-agent capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
+                    } else {
+                        "LAN-agent capabilities last checked ${formatTimestamp(checkedAt)}."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (capabilityState.loading || capabilityState.lanAgentLoading) {
+                Text(text = "Refreshing delegated capability data…", style = MaterialTheme.typography.bodySmall)
             }
             if (guidance.blockers.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -937,6 +996,8 @@ private fun SettingsScreen(
     localCapabilityState: LocalCapabilityUiState,
     onBaseUrlChanged: (String) -> Unit,
     onTokenChanged: (String) -> Unit,
+    onLanAgentBaseUrlChanged: (String) -> Unit,
+    onLanAgentTokenChanged: (String) -> Unit,
     onSave: () -> Unit,
     onRefreshCapabilities: () -> Unit,
     onRefreshLocalCapabilities: () -> Unit,
@@ -964,21 +1025,35 @@ private fun SettingsScreen(
             },
         )
         Text(text = "Delegated executor settings", style = MaterialTheme.typography.titleLarge)
-        OutlinedTextField(
-            value = settingsState.baseUrl,
-            onValueChange = onBaseUrlChanged,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Base URL") },
-            supportingText = { Text("Example: https://scanner.example.com") },
-            singleLine = true,
+        Text(
+            text = "Configure a primary delegated executor for general remote execution and an optional LAN agent for private-topology scans close to the target network.",
+            style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedTextField(
-            value = settingsState.bearerToken,
-            onValueChange = onTokenChanged,
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Bearer token") },
-            supportingText = { Text("Optional. Leave empty only on intentionally trusted private deployments.") },
-            singleLine = true,
+        DelegatedEndpointSettingsCard(
+            title = "Primary delegated executor",
+            description = "Best for public-internet targets or your main remote scanning node.",
+            baseUrl = settingsState.baseUrl,
+            bearerToken = settingsState.bearerToken,
+            onBaseUrlChanged = onBaseUrlChanged,
+            onTokenChanged = onTokenChanged,
+            loading = capabilityState.loading,
+            stale = capabilityState.stale,
+            lastCheckedAtEpochMillis = capabilityState.lastCheckedAtEpochMillis,
+            capabilities = capabilityState.capabilities,
+            error = capabilityState.error,
+        )
+        DelegatedEndpointSettingsCard(
+            title = "Delegated LAN agent",
+            description = "Use a trusted executor inside the private network when targets are RFC1918, link-local, loopback, or similar local scopes.",
+            baseUrl = settingsState.lanAgentBaseUrl,
+            bearerToken = settingsState.lanAgentBearerToken,
+            onBaseUrlChanged = onLanAgentBaseUrlChanged,
+            onTokenChanged = onLanAgentTokenChanged,
+            loading = capabilityState.lanAgentLoading,
+            stale = capabilityState.lanAgentStale,
+            lastCheckedAtEpochMillis = capabilityState.lanAgentLastCheckedAtEpochMillis,
+            capabilities = capabilityState.lanAgentCapabilities,
+            error = capabilityState.lanAgentError,
         )
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -988,46 +1063,91 @@ private fun SettingsScreen(
                 Text("Save settings")
             }
             Button(onClick = onRefreshCapabilities) {
-                Text(if (capabilityState.loading) "Checking..." else "Refresh capabilities")
+                Text(if (capabilityState.loading || capabilityState.lanAgentLoading) "Checking..." else "Refresh capabilities")
             }
         }
-        capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
-            Text(
-                text = if (capabilityState.stale) {
-                    "Capability data is stale relative to unsaved settings changes. Last checked ${formatTimestamp(checkedAt)}."
-                } else {
-                    "Last capability check: ${formatTimestamp(checkedAt)}"
-                },
-                style = MaterialTheme.typography.bodySmall,
+    }
+}
+
+@Composable
+private fun DelegatedEndpointSettingsCard(
+    title: String,
+    description: String,
+    baseUrl: String,
+    bearerToken: String,
+    onBaseUrlChanged: (String) -> Unit,
+    onTokenChanged: (String) -> Unit,
+    loading: Boolean,
+    stale: Boolean,
+    lastCheckedAtEpochMillis: Long?,
+    capabilities: RemoteCapabilitiesResponse?,
+    error: String?,
+) {
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(text = description, style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = baseUrl,
+                onValueChange = onBaseUrlChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Base URL") },
+                supportingText = { Text("Example: https://scanner.example.com") },
+                singleLine = true,
             )
-        }
-        capabilityState.capabilities?.let { capabilities ->
-            ExecutorCapabilityProfileCard(
-                profile = capabilities.executorProfile ?: capabilities.toExecutorCapabilityProfile(),
-                subtitle = capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
-                    if (capabilityState.stale) {
-                        "Snapshot captured ${formatTimestamp(checkedAt)} and is stale relative to unsaved settings changes."
+            OutlinedTextField(
+                value = bearerToken,
+                onValueChange = onTokenChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Bearer token") },
+                supportingText = { Text("Optional. Leave empty only on intentionally trusted private deployments.") },
+                singleLine = true,
+            )
+            lastCheckedAtEpochMillis?.let { checkedAt ->
+                Text(
+                    text = if (stale) {
+                        "Capability data is stale relative to unsaved settings changes. Last checked ${formatTimestamp(checkedAt)}."
                     } else {
-                        "Snapshot captured ${formatTimestamp(checkedAt)}"
-                    }
-                },
-                footer = {
-                    if (capabilities.nmapVersion?.isNotBlank() == true) {
-                        Text(text = "nmap version: ${capabilities.nmapVersion}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (capabilities.ncatVersion?.isNotBlank() == true) {
-                        Text(text = "ncat version: ${capabilities.ncatVersion}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (capabilities.npingVersion?.isNotBlank() == true) {
-                        Text(text = "nping version: ${capabilities.npingVersion}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Text(text = "target policy: ${capabilities.targetPolicySummary}", style = MaterialTheme.typography.bodySmall)
-                },
-            )
-        }
-        capabilityState.error?.let { error ->
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Text(text = error, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer)
+                        "Last capability check: ${formatTimestamp(checkedAt)}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (loading) {
+                Text(text = "Checking delegated capabilities…", style = MaterialTheme.typography.bodySmall)
+            }
+            capabilities?.let { snapshot ->
+                ExecutorCapabilityProfileCard(
+                    profile = snapshot.executorProfile ?: snapshot.toExecutorCapabilityProfile(),
+                    subtitle = lastCheckedAtEpochMillis?.let { checkedAt ->
+                        if (stale) {
+                            "Snapshot captured ${formatTimestamp(checkedAt)} and is stale relative to unsaved settings changes."
+                        } else {
+                            "Snapshot captured ${formatTimestamp(checkedAt)}"
+                        }
+                    },
+                    footer = {
+                        if (snapshot.nmapVersion?.isNotBlank() == true) {
+                            Text(text = "nmap version: ${snapshot.nmapVersion}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (snapshot.ncatVersion?.isNotBlank() == true) {
+                            Text(text = "ncat version: ${snapshot.ncatVersion}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (snapshot.npingVersion?.isNotBlank() == true) {
+                            Text(text = "nping version: ${snapshot.npingVersion}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(text = "target policy: ${snapshot.targetPolicySummary}", style = MaterialTheme.typography.bodySmall)
+                    },
+                )
+            }
+            error?.let { message ->
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Text(
+                        text = message,
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
             }
         }
     }
@@ -1054,6 +1174,15 @@ private fun ExecutorCapabilityProfileCard(
             Text(text = "privileged/raw access: ${profile.privileged}", style = MaterialTheme.typography.bodySmall)
             profile.activeNetworkSummary?.takeIf(String::isNotBlank)?.let {
                 Text(text = "network context: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            if (profile.supportedTargetScopes.isNotEmpty()) {
+                Text(
+                    text = "target scopes: ${profile.supportedTargetScopes.joinToString(separator = ", ") { it.name }}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            profile.topologySummary?.takeIf(String::isNotBlank)?.let {
+                Text(text = "topology summary: $it", style = MaterialTheme.typography.bodySmall)
             }
             profile.maxTargetsPerRun?.let {
                 Text(text = "max targets per run: $it", style = MaterialTheme.typography.bodySmall)

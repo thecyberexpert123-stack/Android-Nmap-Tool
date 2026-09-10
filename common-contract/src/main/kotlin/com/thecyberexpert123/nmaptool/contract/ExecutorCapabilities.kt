@@ -68,6 +68,8 @@ data class ExecutorCapabilityProfile(
     val maxConcurrentExecutions: Int? = null,
     val outputCaptureLimitBytes: Int? = null,
     val activeNetworkSummary: String? = null,
+    val supportedTargetScopes: List<TargetTopologyScope> = emptyList(),
+    val topologySummary: String? = null,
 )
 
 fun AndroidLocalCapabilities.toExecutorCapabilityProfile(
@@ -162,6 +164,8 @@ fun AndroidLocalCapabilities.toExecutorCapabilityProfile(
     maxConcurrentExecutions = null,
     outputCaptureLimitBytes = null,
     activeNetworkSummary = activeNetworkSummary,
+    supportedTargetScopes = allTargetTopologyScopes,
+    topologySummary = "On-device routing follows the active Android network context and current system reachability.",
 )
 
 fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
@@ -172,10 +176,10 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
         ?: "Delegated Nmap executor"
     return ExecutorCapabilityProfile(
         id = executorLabel?.takeIf(String::isNotBlank)?.lowercase()?.replace(Regex("[^a-z0-9-]+"), "-")
-            ?: "remote-nmap-executor",
+            ?: "delegated-executor",
         label = label,
-        kind = ExecutorNodeKind.REMOTE_NMAP,
-        transport = ExecutorTransportKind.HTTPS,
+        kind = executorNodeKind,
+        transport = executorTransportKind,
         available = nmapAvailable || ncatAvailable || npingAvailable,
         requiresAuthentication = requiresAuthentication,
         privileged = privileged,
@@ -290,5 +294,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
         maxConcurrentExecutions = maxConcurrentExecutions,
         outputCaptureLimitBytes = outputCaptureLimitBytes,
         activeNetworkSummary = null,
+        supportedTargetScopes = allowedTargetScopes,
+        topologySummary = topologySummary,
     )
 }

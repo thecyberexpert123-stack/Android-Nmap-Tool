@@ -4,14 +4,19 @@ import com.thecyberexpert123.nmaptool.contract.ApiErrorResponse
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
+import com.thecyberexpert123.nmaptool.contract.ExecutorNodeKind
+import com.thecyberexpert123.nmaptool.contract.ExecutorTransportKind
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
-import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
+import com.thecyberexpert123.nmaptool.contract.TargetTopologyClassifier
+import com.thecyberexpert123.nmaptool.contract.TargetTopologyScope
 import com.thecyberexpert123.nmaptool.contract.TargetValidator
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationRequest
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.ValidationIssue
+import com.thecyberexpert123.nmaptool.contract.allTargetTopologyScopes
+import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -151,6 +156,32 @@ private fun parseRegexList(rawValue: String): List<Regex> =
         .filter(String::isNotEmpty)
         .map(::Regex)
 
+private fun parseTargetScopeList(rawValue: String): Set<TargetTopologyScope> {
+    if (rawValue.isBlank()) {
+        return allTargetTopologyScopes.toSet()
+    }
+    return rawValue.split(';')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .map { value ->
+            runCatching { TargetTopologyScope.valueOf(value.uppercase()) }
+                .getOrElse { error -> throw IllegalArgumentException("Invalid ALLOWED_TARGET_SCOPES entry: $value", error) }
+        }
+        .toSet()
+}
+
+private fun parseExecutorNodeKind(rawValue: String?): ExecutorNodeKind =
+    rawValue?.trim()?.takeIf(String::isNotBlank)?.let { value ->
+        runCatching { ExecutorNodeKind.valueOf(value.uppercase()) }
+            .getOrElse { error -> throw IllegalArgumentException("Invalid EXECUTOR_NODE_KIND: $value", error) }
+    } ?: ExecutorNodeKind.REMOTE_NMAP
+
+private fun parseExecutorTransportKind(rawValue: String?): ExecutorTransportKind =
+    rawValue?.trim()?.takeIf(String::isNotBlank)?.let { value ->
+        runCatching { ExecutorTransportKind.valueOf(value.uppercase()) }
+            .getOrElse { error -> throw IllegalArgumentException("Invalid EXECUTOR_TRANSPORT_KIND: $value", error) }
+    } ?: ExecutorTransportKind.HTTPS
+
 private fun authorize(headerValue: String?, config: ExecutorConfig): String? {
     val expectedToken = config.bearerToken.orEmpty()
     if (expectedToken.isBlank()) {
@@ -167,7 +198,15 @@ private fun validate(request: ToolInvocationRequest, config: ExecutorConfig) = b
             add(
                 ValidationIssue(
                     field = "targets[$index]",
-                    message = "Target is outside the remote executor policy: $target",
+                    message = "Target is outside the delegated executor policy: $target",
+                ),
+            )
+        }
+        if (!config.isTargetScopeAllowed(target)) {
+            add(
+                ValidationIssue(
+                    field = "targets[$index]",
+                    message = "Target scope ${TargetTopologyClassifier.classify(target).name} is outside the delegated executor topology policy: $target",
                 ),
             )
         }
@@ -177,12 +216,15 @@ private fun validate(request: ToolInvocationRequest, config: ExecutorConfig) = b
 data class ExecutorConfig(
     val bearerToken: String?,
     val executorLabel: String,
+    val executorNodeKind: ExecutorNodeKind,
+    val executorTransportKind: ExecutorTransportKind,
     val nmapBinary: String,
     val ncatBinary: String,
     val npingBinary: String,
     val executionTimeoutSeconds: Long,
     val maxOutputBytes: Int,
     val allowedTargetRegexes: List<Regex>,
+    val allowedTargetScopes: Set<TargetTopologyScope>,
     val maxConcurrentExecutions: Int,
     val auditLogPath: String?,
 ) {
@@ -195,12 +237,34 @@ data class ExecutorConfig(
     fun isTargetAllowed(target: String): Boolean =
         allowedTargetRegexes.isEmpty() || allowedTargetRegexes.any { regex -> regex.matches(target) }
 
-    fun targetPolicySummary(): String =
-        if (allowedTargetRegexes.isEmpty()) {
-            "No target regex restriction configured."
-        } else {
-            "Targets must match one of ${allowedTargetRegexes.size} configured regex policies."
-        }
+    fun isTargetScopeAllowed(target: String): Boolean =
+        TargetTopologyClassifier.classify(target) in allowedTargetScopes
+
+    fun topologySummary(): String = buildString {
+        append(
+            when (executorNodeKind) {
+                ExecutorNodeKind.LAN_AGENT -> "This delegated executor is registered as a LAN agent. "
+                ExecutorNodeKind.REMOTE_NMAP -> "This delegated executor is registered as a general Nmap-capable node. "
+                ExecutorNodeKind.ANDROID_LOCAL -> "This delegated executor reports an unexpected Android-local node kind. "
+                ExecutorNodeKind.UNKNOWN -> "This delegated executor did not declare a recognized node kind. "
+            },
+        )
+        append("Allowed target scopes: ")
+        append(allowedTargetScopes.sortedBy { it.ordinal }.joinToString(separator = ", ") { it.name })
+        append('.')
+    }
+
+    fun targetPolicySummary(): String = buildString {
+        append(
+            if (allowedTargetRegexes.isEmpty()) {
+                "No target regex restriction configured."
+            } else {
+                "Targets must match one of ${allowedTargetRegexes.size} configured regex policies."
+            },
+        )
+        append(' ')
+        append(topologySummary())
+    }
 
     companion object {
         fun fromEnvironment(): ExecutorConfig = ExecutorConfig(
@@ -209,13 +273,16 @@ data class ExecutorConfig(
                 ?.trim()
                 ?.takeIf(String::isNotBlank)
                 ?: System.getenv("HOSTNAME")?.trim()?.takeIf(String::isNotBlank)
-                ?: "remote-executor",
+                ?: "delegated-executor",
+            executorNodeKind = parseExecutorNodeKind(System.getenv("EXECUTOR_NODE_KIND")),
+            executorTransportKind = parseExecutorTransportKind(System.getenv("EXECUTOR_TRANSPORT_KIND")),
             nmapBinary = System.getenv("NMAP_BINARY") ?: "nmap",
             ncatBinary = System.getenv("NCAT_BINARY") ?: "ncat",
             npingBinary = System.getenv("NPING_BINARY") ?: "nping",
             executionTimeoutSeconds = System.getenv("EXECUTION_TIMEOUT_SECONDS")?.toLongOrNull() ?: 900L,
             maxOutputBytes = System.getenv("MAX_OUTPUT_BYTES")?.toIntOrNull()?.coerceAtLeast(16_384) ?: 262_144,
             allowedTargetRegexes = parseRegexList(System.getenv("ALLOWED_TARGET_REGEXES").orEmpty()),
+            allowedTargetScopes = parseTargetScopeList(System.getenv("ALLOWED_TARGET_SCOPES").orEmpty()),
             maxConcurrentExecutions = System.getenv("MAX_CONCURRENT_EXECUTIONS")
                 ?.toIntOrNull()
                 ?.coerceIn(1, 64)
@@ -327,7 +394,13 @@ class RemoteExecutionEngine(
             outputCaptureLimitBytes = config.maxOutputBytes,
             targetPolicySummary = config.targetPolicySummary(),
             advisory = buildString {
-                append("Remote execution is the preferred compatibility path for non-root Android devices. ")
+                append(
+                    when (config.executorNodeKind) {
+                        ExecutorNodeKind.LAN_AGENT -> "Delegated LAN-agent execution is the preferred compatibility path for private-topology targets from non-root Android devices. "
+                        ExecutorNodeKind.REMOTE_NMAP -> "Delegated execution is the preferred compatibility path for non-root Android devices. "
+                        ExecutorNodeKind.ANDROID_LOCAL, ExecutorNodeKind.UNKNOWN -> "Delegated execution is available for this node. "
+                    },
+                )
                 append("Privileged scans still depend on how this host is configured. ")
                 append("File-writing and process-spawning flags are blocked by policy. ")
                 append(config.targetPolicySummary())
@@ -339,6 +412,10 @@ class RemoteExecutionEngine(
             npingVersion = if (npingAvailable) detectToolVersion(config.npingBinary, listOf("--version")) else null,
             auditLoggingEnabled = config.auditLogPath != null,
             maxConcurrentExecutions = config.maxConcurrentExecutions,
+            executorNodeKind = config.executorNodeKind,
+            executorTransportKind = config.executorTransportKind,
+            allowedTargetScopes = config.allowedTargetScopes.sortedBy { it.ordinal },
+            topologySummary = config.topologySummary(),
         )
         return response.copy(executorProfile = response.toExecutorCapabilityProfile())
     }

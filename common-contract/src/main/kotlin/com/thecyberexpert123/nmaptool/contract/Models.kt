@@ -96,6 +96,10 @@ data class RemoteCapabilitiesResponse(
     val npingVersion: String? = null,
     val auditLoggingEnabled: Boolean = false,
     val maxConcurrentExecutions: Int = 1,
+    val executorNodeKind: ExecutorNodeKind = ExecutorNodeKind.REMOTE_NMAP,
+    val executorTransportKind: ExecutorTransportKind = ExecutorTransportKind.HTTPS,
+    val allowedTargetScopes: List<TargetTopologyScope> = allTargetTopologyScopes,
+    val topologySummary: String = "No topology scope restriction configured.",
     val executorProfile: ExecutorCapabilityProfile? = null,
 )
 

@@ -195,7 +195,8 @@ This project chooses correctness over false claims:
 - can enforce an executor-side concurrency ceiling to reduce host overload
 - can append lightweight JSONL audit events with request IDs, execution outcome, and truncation metadata
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
-- optional target-scope restriction via `ALLOWED_TARGET_REGEXES`
+- optional executor identity metadata via `EXECUTOR_NODE_KIND` and `EXECUTOR_TRANSPORT_KIND`
+- optional target-scope restriction via `ALLOWED_TARGET_REGEXES` and `ALLOWED_TARGET_SCOPES`
 - bounded output capture via `MAX_OUTPUT_BYTES`
 - enforces execution timeout
 
@@ -206,6 +207,8 @@ This project chooses correctness over false claims:
 | `PORT` | HTTP server port | `8080` |
 | `NMAP_EXECUTOR_TOKEN` | Optional bearer token required by API | unset |
 | `EXECUTOR_LABEL` | Optional human-readable label returned in capability reports and run audit metadata | hostname or `remote-executor` |
+| `EXECUTOR_NODE_KIND` | Declares the executor role reported to Android (`REMOTE_NMAP`, `LAN_AGENT`, `UNKNOWN`) | `REMOTE_NMAP` |
+| `EXECUTOR_TRANSPORT_KIND` | Declares how the executor is reached (`HTTPS`, `PRIVATE_OVERLAY`, `VPN_TUNNEL`, `UNKNOWN`) | `HTTPS` |
 | `NMAP_BINARY` | Path or command name for `nmap` | `nmap` |
 | `NCAT_BINARY` | Path or command name for `ncat` | `ncat` |
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
@@ -214,6 +217,7 @@ This project chooses correctness over false claims:
 | `MAX_CONCURRENT_EXECUTIONS` | Maximum simultaneous in-flight executions allowed by the delegated executor | `2` |
 | `AUDIT_LOG_PATH` | Optional JSONL audit log destination for request/execution events | unset |
 | `ALLOWED_TARGET_REGEXES` | Optional semicolon-separated regex allowlist for targets | unset |
+| `ALLOWED_TARGET_SCOPES` | Optional semicolon-separated target topology scopes allowed by this executor | all scopes |
 
 ## Build requirements
 
@@ -248,15 +252,21 @@ export AUDIT_LOG_PATH="./logs/executor-audit.jsonl"
 export NMAP_BINARY="nmap"
 export NCAT_BINARY="ncat"
 export NPING_BINARY="nping"
+# Optional when this node is a private-network LAN agent:
+# export EXECUTOR_NODE_KIND="LAN_AGENT"
+# export EXECUTOR_TRANSPORT_KIND="PRIVATE_OVERLAY"
+# export ALLOWED_TARGET_SCOPES="PRIVATE_LAN;LINK_LOCAL;LOOPBACK;CARRIER_GRADE_NAT;HOSTNAME_OR_UNRESOLVED;UNKNOWN"
 ./gradlew :remote-executor:run
 ```
 
 ## Example workflow
 
 1. Install the Android app.
-2. If you want broader/full Nmap coverage, start the delegated executor on a host you control.
-3. Open **Settings** and configure the delegated executor base URL and optional bearer token when you plan to use delegated mode.
-4. Refresh capabilities to confirm the delegated backend sees `nmap`, `ncat`, and `nping`, and use **Refresh local snapshot** to review stock-device limits.
+2. If you want broader/full Nmap coverage, start one or both delegated executors on hosts you control:
+   - a primary delegated executor for general remote scans,
+   - an optional LAN agent near the private network you want to scan.
+3. Open **Settings** and configure the primary delegated executor and, when needed, the LAN-agent base URL plus optional bearer tokens.
+4. Refresh capabilities to confirm each delegated backend sees `nmap`, `ncat`, and `nping`, advertises the expected executor role, and reports the intended target-topology policy. Use **Refresh local snapshot** to review stock-device limits.
 5. Build a profile in **Builder** using:
    - targets,
    - tool selection,
@@ -315,12 +325,11 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 ## Roadmap
 
 ### Next milestones
-1. delegated LAN-agent support
-   - executor-node registration, capability reporting, and private-topology-aware routing for user-controlled LAN agents
+1. deeper delegated-executor routing verification and policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
 2. richer Nmap result modeling using structured output formats where feasible
 3. optional authenticated multi-user delegated-executor governance beyond the current single-token deployment model
 4. deeper delegated-executor observability such as richer backend metrics/retention controls around audit logs
-5. executor-policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
+5. broader delegated execution management such as health/history for multiple registered executor nodes
 
 ## Verification status
 
