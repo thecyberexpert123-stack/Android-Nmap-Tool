@@ -53,6 +53,7 @@ import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
+import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import java.text.DateFormat
@@ -65,6 +66,12 @@ private enum class AppTab(val label: String) {
     AUTOMATION("Automation"),
     SETTINGS("Settings"),
 }
+
+private data class DashboardPortAlert(
+    val profileName: String,
+    val finding: PortFinding,
+    val opened: Boolean,
+)
 
 @Composable
 fun NmapToolRoot(viewModel: NmapToolViewModel) {
@@ -190,6 +197,27 @@ private fun DashboardScreen(
     onRunProfile: (String) -> Unit,
     paddingValues: PaddingValues,
 ) {
+    val recentRuns = runs.take(20)
+    val observedHosts = recentRuns
+        .flatMap { run -> run.parsedSummary.portFindings }
+        .mapNotNull { finding -> finding.host?.takeIf(String::isNotBlank) }
+        .toSet()
+    val observedEndpoints = recentRuns
+        .flatMap { run -> run.parsedSummary.portFindings }
+        .map { finding -> "${finding.host.orEmpty()}|${finding.endpointLabel}" }
+        .toSet()
+    val recentPortAlerts = buildList {
+        recentRuns.forEach { run ->
+            run.newOpenPorts.forEach { finding ->
+                add(DashboardPortAlert(profileName = run.profileName, finding = finding, opened = true))
+            }
+            run.closedPorts.forEach { finding ->
+                add(DashboardPortAlert(profileName = run.profileName, finding = finding, opened = false))
+            }
+        }
+    }.take(8)
+    val changedRuns = recentRuns.count { it.newOpenPorts.isNotEmpty() || it.closedPorts.isNotEmpty() }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -208,6 +236,16 @@ private fun DashboardScreen(
             }
         }
         item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MetricCard(title = "Observed hosts", value = observedHosts.size.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Open endpoints", value = observedEndpoints.size.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Port alerts", value = changedRuns.toString(), modifier = Modifier.weight(1f))
+            }
+        }
+        item {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Execution posture", style = MaterialTheme.typography.titleMedium)
@@ -223,6 +261,21 @@ private fun DashboardScreen(
                         Text("Create scan profile")
                     }
                 }
+            }
+        }
+        item { SectionHeader(title = "Recent port changes") }
+        if (recentPortAlerts.isEmpty()) {
+            item {
+                Card {
+                    Text(
+                        text = "No parsed open-port additions or removals are available yet. Run recurring Nmap profiles to populate change insights.",
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+            }
+        } else {
+            items(recentPortAlerts) { alert ->
+                DashboardPortAlertCard(alert = alert)
             }
         }
         item { SectionHeader(title = "Recent profiles") }
@@ -675,6 +728,29 @@ private fun ProfileCard(
 }
 
 @Composable
+private fun DashboardPortAlertCard(alert: DashboardPortAlert) {
+    val containerColor = if (alert.opened) {
+        MaterialTheme.colorScheme.tertiaryContainer
+    } else {
+        MaterialTheme.colorScheme.errorContainer
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = containerColor)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(text = alert.profileName, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = if (alert.opened) "New open endpoint detected" else "Previously open endpoint missing",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = formatFinding(alert.finding),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        }
+    }
+}
+
+@Composable
 private fun RunCard(run: ScanRunSummary) {
     val changeContainerColor = when (run.changeKind) {
         RunChangeKind.BASELINE -> MaterialTheme.colorScheme.secondaryContainer
@@ -708,26 +784,22 @@ private fun RunCard(run: ScanRunSummary) {
                     }
                 }
             }
+            if (run.newOpenPorts.isNotEmpty()) {
+                PreviewCard(
+                    title = "New open ports since previous run",
+                    body = run.newOpenPorts.joinToString(separator = "\n", transform = ::formatFinding),
+                )
+            }
+            if (run.closedPorts.isNotEmpty()) {
+                PreviewCard(
+                    title = "Previously open ports no longer present",
+                    body = run.closedPorts.joinToString(separator = "\n", transform = ::formatFinding),
+                )
+            }
             if (run.parsedSummary.portFindings.isNotEmpty()) {
                 PreviewCard(
                     title = "Parsed findings",
-                    body = run.parsedSummary.portFindings.joinToString(separator = "\n") { finding ->
-                        buildString {
-                            finding.host?.takeIf(String::isNotBlank)?.let {
-                                append(it)
-                                append(' ')
-                            }
-                            append(finding.endpointLabel)
-                            append(' ')
-                            append(finding.state)
-                            append(' ')
-                            append(finding.service)
-                            if (finding.details.isNotBlank()) {
-                                append(" — ")
-                                append(finding.details)
-                            }
-                        }
-                    },
+                    body = run.parsedSummary.portFindings.joinToString(separator = "\n", transform = ::formatFinding),
                 )
             }
             Text(
@@ -810,6 +882,22 @@ private fun SelectorSection(
         ) {
             content()
         }
+    }
+}
+
+private fun formatFinding(finding: PortFinding): String = buildString {
+    finding.host?.takeIf(String::isNotBlank)?.let {
+        append(it)
+        append(' ')
+    }
+    append(finding.endpointLabel)
+    append(' ')
+    append(finding.state)
+    append(' ')
+    append(finding.service)
+    if (finding.details.isNotBlank()) {
+        append(" — ")
+        append(finding.details)
     }
 }
 

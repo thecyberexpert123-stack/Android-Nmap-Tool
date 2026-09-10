@@ -63,6 +63,8 @@ The format is intentionally simple and incremental so each agent session can app
   - Nmap host/open-port extraction
   - Nping packet/RTT summary extraction
   - Ncat connection/session highlight extraction
+- Added **host/port change detection** for repeated Nmap runs based on parsed open endpoints.
+- Added **dashboard insight cards** for observed hosts, open endpoints, and recent port-change alerts derived from recent run history.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

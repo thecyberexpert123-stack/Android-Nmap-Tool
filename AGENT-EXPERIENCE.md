@@ -100,6 +100,7 @@ This document records development observations, constraints, trade-offs, and lea
 - For security tooling, “better UX” often means fewer ambiguous states and more transparent policy enforcement.
 - Change awareness matters: recurring scans become significantly more useful when the operator can immediately see whether the latest run materially differs from the previous one.
 - Lightweight output parsing is useful, but it must be described honestly as heuristic unless the implementation is driven by a guaranteed structured output format.
+- Dashboard insights become much more valuable when they are derived from saved run history and explicit parsed deltas instead of invented status labels.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

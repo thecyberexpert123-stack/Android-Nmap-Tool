@@ -101,10 +101,17 @@ This project chooses correctness over false claims:
 - Capability refresh from the backend
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
+- Dashboard insight cards for:
+  - observed hosts from parsed findings
+  - open endpoints seen in recent runs
+  - recent port-change alerts
 - Shared **result parsing** for richer summaries:
   - Nmap host/up/open-port extraction from standard output
   - Nping packet and RTT summary extraction
   - Ncat connection/output highlight extraction
+- Parsed **host/port change detection** for repeated Nmap runs:
+  - newly open endpoints since the previous run
+  - previously open endpoints no longer present
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -192,7 +199,8 @@ export NPING_BINARY="nping"
    - optional recurring schedule.
 6. Review the live effective-argument preview and command preview.
 7. Save the profile and run it manually or let automation trigger it.
-8. Inspect status, logs, and run-to-run deltas in **History**.
+8. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
+9. Inspect status, logs, parsed findings, and run-to-run deltas in **History**.
 
 ## Result summaries
 
@@ -203,8 +211,15 @@ The app now derives lightweight summaries from captured tool output to make repe
 - **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
 - **Ncat**: surfaces connection target and first output line when present.
 
+### Change detection behavior
+- For repeated **Nmap** runs of the same saved profile, the app compares parsed open endpoints between the latest run and the previous run.
+- It highlights:
+  - newly open endpoints
+  - previously open endpoints no longer present
+- Non-Nmap tools currently keep generic delta reporting only.
+
 ### Important limitation
-These summaries are **heuristic parsers of captured output**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
+These summaries and deltas are **heuristic parsers of captured output**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
 
@@ -222,10 +237,10 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 ### Next milestones
 1. Local native execution integration strategy
    - bundled binaries, user-provided binaries, or companion runtime
-2. richer profile builder with common Nmap flags exposed as structured controls
-3. diffing between scan runs and change alerts
-4. export/reporting formats
-5. optional authenticated multi-user remote executor governance
+2. richer Nmap result modeling using structured output formats where feasible
+3. export/reporting formats
+4. optional authenticated multi-user remote executor governance
+5. local-vs-remote capability detection and policy UX refinement
 
 ## Verification status
 

@@ -8,10 +8,12 @@ import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.InvocationFactory
+import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
+import com.thecyberexpert123.nmaptool.contract.ToolResultDeltaAnalyzer
 import com.thecyberexpert123.nmaptool.contract.ToolResultParser
 import com.thecyberexpert123.nmaptool.contract.ToolResultSummary
 import com.thecyberexpert123.nmaptool.contract.ToolType
@@ -77,6 +79,8 @@ data class ScanRunSummary(
     val changeKind: RunChangeKind,
     val changeSummary: String,
     val parsedSummary: ToolResultSummary,
+    val newOpenPorts: List<PortFinding>,
+    val closedPorts: List<PortFinding>,
 )
 
 class DefaultScanRepository(
@@ -120,18 +124,33 @@ class DefaultScanRepository(
 
     fun observeRuns(): Flow<List<ScanRunSummary>> =
         runDao.observeRecent().map { runs ->
-            val changeByRunId = buildRunChangeMap(runs)
-            runs.map { entity ->
-                val change = changeByRunId.getValue(entity.id)
+            val parsedRuns = runs.map { entity ->
                 val tool = ToolType.valueOf(entity.toolType)
                 val status = RunStatus.valueOf(entity.status)
+                ParsedRunSnapshot(
+                    entity = entity,
+                    tool = tool,
+                    status = status,
+                    parsedSummary = ToolResultParser.parse(
+                        tool = tool,
+                        status = status,
+                        exitCode = entity.exitCode,
+                        stdout = entity.stdout,
+                        stderr = entity.stderr,
+                    ),
+                )
+            }
+            val changeByRunId = buildRunChangeMap(parsedRuns)
+            parsedRuns.map { parsedRun ->
+                val entity = parsedRun.entity
+                val change = changeByRunId.getValue(entity.id)
                 ScanRunSummary(
                     id = entity.id,
                     profileId = entity.profileId,
                     profileName = entity.profileName,
-                    tool = tool,
+                    tool = parsedRun.tool,
                     route = ExecutionRoute.valueOf(entity.route),
-                    status = status,
+                    status = parsedRun.status,
                     trigger = RunTrigger.valueOf(entity.triggerSource),
                     commandPreview = entity.commandPreview,
                     exitCode = entity.exitCode,
@@ -142,13 +161,9 @@ class DefaultScanRepository(
                     finishedAtEpochMillis = entity.finishedAtEpochMillis,
                     changeKind = change.kind,
                     changeSummary = change.summary,
-                    parsedSummary = ToolResultParser.parse(
-                        tool = tool,
-                        status = status,
-                        exitCode = entity.exitCode,
-                        stdout = entity.stdout,
-                        stderr = entity.stderr,
-                    ),
+                    parsedSummary = parsedRun.parsedSummary,
+                    newOpenPorts = change.newOpenPorts,
+                    closedPorts = change.closedPorts,
                 )
             }
         }
@@ -358,21 +373,21 @@ class DefaultScanRepository(
         return issues
     }
 
-    private fun buildRunChangeMap(runs: List<ScanRunEntity>): Map<String, RunChangeSummary> {
+    private fun buildRunChangeMap(runs: List<ParsedRunSnapshot>): Map<String, RunChangeSummary> {
         val changes = mutableMapOf<String, RunChangeSummary>()
-        runs.groupBy { entity -> entity.profileId ?: "${entity.toolType}:${entity.profileName}" }
+        runs.groupBy { snapshot -> snapshot.entity.profileId ?: "${snapshot.entity.toolType}:${snapshot.entity.profileName}" }
             .values
             .forEach { profileRuns ->
-                val ordered = profileRuns.sortedBy { it.startedAtEpochMillis }
+                val ordered = profileRuns.sortedBy { it.entity.startedAtEpochMillis }
                 ordered.forEachIndexed { index, current ->
                     val previous = ordered.getOrNull(index - 1)
-                    changes[current.id] = compareRuns(previous, current)
+                    changes[current.entity.id] = compareRuns(previous, current)
                 }
             }
         return changes
     }
 
-    private fun compareRuns(previous: ScanRunEntity?, current: ScanRunEntity): RunChangeSummary {
+    private fun compareRuns(previous: ParsedRunSnapshot?, current: ParsedRunSnapshot): RunChangeSummary {
         if (previous == null) {
             return RunChangeSummary(
                 kind = RunChangeKind.BASELINE,
@@ -384,28 +399,42 @@ class DefaultScanRepository(
         if (previous.status != current.status) {
             deltas += "status ${previous.status} → ${current.status}"
         }
-        if (previous.route != current.route) {
-            deltas += "route ${previous.route} → ${current.route}"
+        if (previous.entity.route != current.entity.route) {
+            deltas += "route ${previous.entity.route} → ${current.entity.route}"
         }
-        if (previous.exitCode != current.exitCode) {
-            deltas += "exit code ${previous.exitCode ?: "none"} → ${current.exitCode ?: "none"}"
+        if (previous.entity.exitCode != current.entity.exitCode) {
+            deltas += "exit code ${previous.entity.exitCode ?: "none"} → ${current.entity.exitCode ?: "none"}"
         }
-        if (previous.commandPreview != current.commandPreview) {
+        if (previous.entity.commandPreview != current.entity.commandPreview) {
             deltas += "command arguments changed"
         }
-        if (fingerprint(previous.stdout) != fingerprint(current.stdout) || fingerprint(previous.stderr) != fingerprint(current.stderr)) {
+        if (fingerprint(previous.entity.stdout) != fingerprint(current.entity.stdout) || fingerprint(previous.entity.stderr) != fingerprint(current.entity.stderr)) {
             deltas += "captured output changed"
+        }
+
+        val parsedDelta = ToolResultDeltaAnalyzer.compare(
+            tool = current.tool,
+            previous = previous.parsedSummary,
+            current = current.parsedSummary,
+        )
+        val parsedDeltaIsInformative = parsedDelta.newOpenPorts.isNotEmpty() || parsedDelta.closedPorts.isNotEmpty()
+        if (parsedDeltaIsInformative) {
+            deltas += parsedDelta.summary
         }
 
         return if (deltas.isEmpty()) {
             RunChangeSummary(
                 kind = RunChangeKind.UNCHANGED,
                 summary = "No meaningful delta from the previous recorded run.",
+                newOpenPorts = parsedDelta.newOpenPorts,
+                closedPorts = parsedDelta.closedPorts,
             )
         } else {
             RunChangeSummary(
                 kind = RunChangeKind.CHANGED,
                 summary = deltas.joinToString(separator = "; "),
+                newOpenPorts = parsedDelta.newOpenPorts,
+                closedPorts = parsedDelta.closedPorts,
             )
         }
     }
@@ -420,8 +449,17 @@ class DefaultScanRepository(
         }
     }
 
+    private data class ParsedRunSnapshot(
+        val entity: ScanRunEntity,
+        val tool: ToolType,
+        val status: RunStatus,
+        val parsedSummary: ToolResultSummary,
+    )
+
     private data class RunChangeSummary(
         val kind: RunChangeKind,
         val summary: String,
+        val newOpenPorts: List<PortFinding> = emptyList(),
+        val closedPorts: List<PortFinding> = emptyList(),
     )
 }
