@@ -104,7 +104,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Added shared target-topology classification and delegated-executor routing helpers so private-network targets can prefer a user-controlled LAN agent over a general remote executor.
 - Expanded delegated executor capability metadata to report executor node kind, transport kind, allowed target scopes, and a topology summary across the shared contract, Android UI, and Ktor backend.
 - Added Android support for storing both a primary delegated executor and a separate LAN-agent endpoint with distinct Android Keystore-protected bearer tokens.
+- Added persisted delegated capability snapshots for the primary executor and LAN agent so saved settings retain last-known capability metadata across app restarts.
 - Updated Android builder/settings/dashboard flows so capability refresh, executor cards, and target-context messaging now cover both the primary delegated executor and an optional LAN agent.
+- Updated Android startup and scheduled/manual execution routing to reuse saved delegated capability snapshots, keeping background runs closer to the same topology-aware policy the UI shows.
+- Updated builder guidance so incompatible delegated topology/policy combinations no longer present as generally remote-ready when only a mismatched executor is configured.
 - Updated runtime delegated dispatch selection so target-topology-aware AUTO/REMOTE routing can choose the configured LAN agent for private-style targets without pretending Android itself gained raw-packet parity.
 - Added shared unit-test coverage for topology classification, delegated LAN-agent selection, and topology-aware capability-profile mapping.
 - Added shared test coverage for phase-C local `-O` planning/guidance and heuristic parsing of Android-local fingerprint-inference lines.

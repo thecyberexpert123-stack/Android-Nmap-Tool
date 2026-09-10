@@ -511,11 +511,13 @@ private fun BuilderScreen(
             guidance = state.executionGuidance,
             capabilityState = capabilityState,
         )
-        state.delegatedExecutorContextLabel?.let { label ->
+        if (state.delegatedExecutorContextLabel != null || state.delegatedExecutorSelectionReason != null) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(text = "Delegated executor routing", style = MaterialTheme.typography.titleMedium)
-                    Text(text = "Selected delegated executor: $label")
+                    state.delegatedExecutorContextLabel?.let { label ->
+                        Text(text = "Selected delegated executor: $label")
+                    }
                     state.delegatedExecutorSelectionReason?.let { reason ->
                         Text(text = reason, style = MaterialTheme.typography.bodySmall)
                     }
@@ -1013,7 +1015,7 @@ private fun SettingsScreen(
     ) {
         Text(text = "Execution settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, curated service identification, and evidence-based fingerprint inference, while delegated execution remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving delegated-executor settings also re-checks backend capabilities when a base URL is configured.",
+            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, curated service identification, and evidence-based fingerprint inference, while delegated execution remains the honest path to broader/full Nmap functionality on modern non-root devices. Bearer tokens are stored encrypted with Android Keystore, and the last verified delegated capability snapshots are retained for startup visibility and scheduled routing against saved settings.",
         )
         ExecutorCapabilityProfileCard(
             profile = localCapabilityState.executorProfile,

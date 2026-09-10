@@ -1,14 +1,17 @@
 package com.thecyberexpert123.androidnmap.data
 
+import com.thecyberexpert123.androidnmap.execution.DelegatedExecutorEndpointRecord
+import com.thecyberexpert123.androidnmap.execution.DelegatedExecutorResolver
 import com.thecyberexpert123.androidnmap.execution.LocalToolExecutor
 import com.thecyberexpert123.androidnmap.execution.RemoteExecutorClient
+import com.thecyberexpert123.androidnmap.settings.CachedRemoteCapabilitiesSnapshot
+import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSlot
+import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorCapabilitySnapshotBundle
 import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSettingsBundle
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.settings.RemoteSettingsStore
 import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
-import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingAdvisor
-import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingCandidate
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.ExecutionRouteAdvisor
@@ -18,7 +21,6 @@ import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
-import com.thecyberexpert123.nmaptool.contract.TargetTopologyScope
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
 import com.thecyberexpert123.nmaptool.contract.ToolResultDeltaAnalyzer
 import com.thecyberexpert123.nmaptool.contract.ToolResultParser
@@ -26,7 +28,7 @@ import com.thecyberexpert123.nmaptool.contract.ToolResultSummary
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.ValidationIssue
 import com.thecyberexpert123.nmaptool.contract.ValidationResult
-import com.thecyberexpert123.nmaptool.contract.allTargetTopologyScopes
+import com.thecyberexpert123.nmaptool.contract.isToolAvailable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -279,7 +281,24 @@ class DefaultScanRepository(
 
     fun readDelegatedExecutorSettings(): DelegatedExecutorSettingsBundle = remoteSettingsStore.readBundle()
 
+    fun readDelegatedCapabilitySnapshots(): DelegatedExecutorCapabilitySnapshotBundle =
+        remoteSettingsStore.readCapabilitySnapshotBundle()
+
     fun readLocalCapabilities(): AndroidLocalCapabilities = localToolExecutor.capabilityProfile()
+
+    fun cacheDelegatedCapabilitySnapshot(
+        slot: DelegatedExecutorSlot,
+        capabilities: RemoteCapabilitiesResponse,
+        checkedAtEpochMillis: Long,
+    ) {
+        remoteSettingsStore.saveCapabilitySnapshot(
+            slot = slot,
+            snapshot = CachedRemoteCapabilitiesSnapshot(
+                capabilities = capabilities,
+                checkedAtEpochMillis = checkedAtEpochMillis,
+            ),
+        )
+    }
 
     fun saveRemoteSettings(settings: RemoteEndpointSettings): ValidationResult<Unit> =
         saveDelegatedExecutorSettings(
@@ -351,30 +370,40 @@ class DefaultScanRepository(
         } else {
             val request = validation.value!!.request
             val localDecision = localToolExecutor.inspect(request)
-            val delegatedSettings = remoteSettingsStore.readBundle()
-            val delegatedEndpoint = selectDelegatedExecutorSettings(
+            val delegatedSelection = selectDelegatedExecutor(
                 targets = request.targets,
-                settings = delegatedSettings,
+                settings = remoteSettingsStore.readBundle(),
+                snapshots = remoteSettingsStore.readCapabilitySnapshotBundle(),
             )
             val selectedRoute = ExecutionRouteAdvisor.select(
                 executionPreference = request.executionPreference,
-                remoteConfigured = delegatedEndpoint != null,
+                remoteConfigured = delegatedSelection != null,
                 localSupported = localDecision.canExecute,
                 preferDelegatedWhenAvailable = localDecision.preferDelegatedWhenAvailable,
             )
             when (selectedRoute) {
                 ExecutionRoute.LOCAL -> localToolExecutor.execute(request)
-                ExecutionRoute.REMOTE -> delegatedEndpoint?.let { remoteExecutorClient.execute(it, request) }
-                    ?: buildFailureResponse(
+                ExecutionRoute.REMOTE -> when {
+                    delegatedSelection == null -> buildFailureResponse(
                         route = ExecutionRoute.BLOCKED,
                         commandPreview = validation.value.commandPreview,
-                        message = "Delegated execution was requested, but no matching delegated executor is configured for the current target topology.",
+                        message = delegatedExecutorUnavailableMessage(request.targets),
                     )
+
+                    delegatedSelection.capabilities?.isToolAvailable(tool) == false -> buildFailureResponse(
+                        route = ExecutionRoute.BLOCKED,
+                        commandPreview = validation.value.commandPreview,
+                        message = "${delegatedSelection.label} does not currently report ${tool.binaryName} as available for delegated execution.",
+                    )
+
+                    else -> remoteExecutorClient.execute(delegatedSelection.settings, request)
+                }
+
                 ExecutionRoute.BLOCKED, null -> when (request.executionPreference) {
                     ExecutionPreference.REMOTE_ONLY -> buildFailureResponse(
                         route = ExecutionRoute.BLOCKED,
                         commandPreview = validation.value.commandPreview,
-                        message = "Delegated execution was requested, but no matching delegated executor is configured for the current target topology.",
+                        message = delegatedExecutorUnavailableMessage(request.targets),
                     )
 
                     ExecutionPreference.LOCAL_ONLY,
@@ -445,58 +474,44 @@ class DefaultScanRepository(
         message = message,
     )
 
-    private fun selectDelegatedExecutorSettings(
+    private fun selectDelegatedExecutor(
         targets: List<String>,
         settings: DelegatedExecutorSettingsBundle,
-    ): RemoteEndpointSettings? {
-        val selection = DelegatedExecutorRoutingAdvisor.select(
-            targets = targets,
-            candidates = listOf(
-                delegatedCandidate(
-                    id = "primary",
-                    label = "Primary delegated executor",
-                    settings = settings.primary,
-                    kind = ExecutorNodeKind.REMOTE_NMAP,
-                ),
-                delegatedCandidate(
-                    id = "lan-agent",
-                    label = "LAN agent",
-                    settings = settings.lanAgent,
-                    kind = ExecutorNodeKind.LAN_AGENT,
-                ),
-            ),
-        ) ?: return null
-        return when (selection.candidateId) {
-            "lan-agent" -> settings.lanAgent.takeIf { it.baseUrl.isNotBlank() }
-            else -> settings.primary.takeIf { it.baseUrl.isNotBlank() }
-        }
+        snapshots: DelegatedExecutorCapabilitySnapshotBundle,
+    ) = DelegatedExecutorResolver.select(
+        targets = targets,
+        records = delegatedExecutorRecords(settings, snapshots),
+    )
+
+    private fun delegatedExecutorUnavailableMessage(targets: List<String>): String {
+        val records = delegatedExecutorRecords(
+            settings = remoteSettingsStore.readBundle(),
+            snapshots = remoteSettingsStore.readCapabilitySnapshotBundle(),
+        )
+        return DelegatedExecutorResolver.incompatibilityMessage(targets, records)
+            ?: "Delegated execution was requested, but no compatible delegated executor is configured."
     }
 
-    private fun delegatedCandidate(
-        id: String,
-        label: String,
-        settings: RemoteEndpointSettings,
-        kind: ExecutorNodeKind,
-    ): DelegatedExecutorRoutingCandidate = DelegatedExecutorRoutingCandidate(
-        id = id,
-        label = label,
-        configured = settings.baseUrl.isNotBlank(),
-        kind = kind,
-        allowedTargetScopes = when (kind) {
-            ExecutorNodeKind.LAN_AGENT -> setOf(
-                TargetTopologyScope.PRIVATE_LAN,
-                TargetTopologyScope.LINK_LOCAL,
-                TargetTopologyScope.LOOPBACK,
-                TargetTopologyScope.CARRIER_GRADE_NAT,
-                TargetTopologyScope.HOSTNAME_OR_UNRESOLVED,
-                TargetTopologyScope.UNKNOWN,
-            )
-            ExecutorNodeKind.REMOTE_NMAP,
-            ExecutorNodeKind.ANDROID_LOCAL,
-            ExecutorNodeKind.UNKNOWN,
-            -> allTargetTopologyScopes.toSet()
-        },
-        capabilitiesFresh = false,
+    private fun delegatedExecutorRecords(
+        settings: DelegatedExecutorSettingsBundle,
+        snapshots: DelegatedExecutorCapabilitySnapshotBundle,
+    ): List<DelegatedExecutorEndpointRecord> = listOf(
+        DelegatedExecutorEndpointRecord(
+            slot = DelegatedExecutorSlot.PRIMARY,
+            label = "Primary delegated executor",
+            settings = settings.primary,
+            fallbackKind = ExecutorNodeKind.REMOTE_NMAP,
+            capabilities = snapshots.primary?.capabilities,
+            capabilitiesCheckedAtEpochMillis = snapshots.primary?.checkedAtEpochMillis,
+        ),
+        DelegatedExecutorEndpointRecord(
+            slot = DelegatedExecutorSlot.LAN_AGENT,
+            label = "LAN agent",
+            settings = settings.lanAgent,
+            fallbackKind = ExecutorNodeKind.LAN_AGENT,
+            capabilities = snapshots.lanAgent?.capabilities,
+            capabilitiesCheckedAtEpochMillis = snapshots.lanAgent?.checkedAtEpochMillis,
+        ),
     )
 
     private fun validateRemoteEndpointSettings(

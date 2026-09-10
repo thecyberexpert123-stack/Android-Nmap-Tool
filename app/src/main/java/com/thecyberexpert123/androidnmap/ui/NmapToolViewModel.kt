@@ -8,15 +8,16 @@ import com.thecyberexpert123.androidnmap.data.DefaultScanRepository
 import com.thecyberexpert123.androidnmap.data.EditableScanProfile
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
+import com.thecyberexpert123.androidnmap.execution.DelegatedExecutorEndpointRecord
+import com.thecyberexpert123.androidnmap.execution.DelegatedExecutorResolver
 import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSettingsBundle
+import com.thecyberexpert123.androidnmap.settings.DelegatedExecutorSlot
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.work.AutomationScheduler
 import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.ArgumentTokenizer
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
-import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingAdvisor
-import com.thecyberexpert123.nmaptool.contract.DelegatedExecutorRoutingCandidate
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceAdvisor
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
@@ -30,9 +31,7 @@ import com.thecyberexpert123.nmaptool.contract.ScanPreset
 import com.thecyberexpert123.nmaptool.contract.StructuredNmapArgumentComposer
 import com.thecyberexpert123.nmaptool.contract.StructuredNmapOptions
 import com.thecyberexpert123.nmaptool.contract.TargetParser
-import com.thecyberexpert123.nmaptool.contract.TargetTopologyScope
 import com.thecyberexpert123.nmaptool.contract.ToolType
-import com.thecyberexpert123.nmaptool.contract.allTargetTopologyScopes
 import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -145,11 +144,18 @@ class NmapToolViewModel(
 
     init {
         val savedSettings = repository.readDelegatedExecutorSettings()
+        val savedSnapshots = repository.readDelegatedCapabilitySnapshots()
         _remoteSettings.value = RemoteSettingsUiState(
             baseUrl = savedSettings.primary.baseUrl,
             bearerToken = savedSettings.primary.bearerToken,
             lanAgentBaseUrl = savedSettings.lanAgent.baseUrl,
             lanAgentBearerToken = savedSettings.lanAgent.bearerToken,
+        )
+        _capabilityState.value = CapabilityUiState(
+            capabilities = savedSnapshots.primary?.capabilities,
+            lastCheckedAtEpochMillis = savedSnapshots.primary?.checkedAtEpochMillis,
+            lanAgentCapabilities = savedSnapshots.lanAgent?.capabilities,
+            lanAgentLastCheckedAtEpochMillis = savedSnapshots.lanAgent?.checkedAtEpochMillis,
         )
         refreshBuilderDerivedState()
     }
@@ -435,6 +441,13 @@ class NmapToolViewModel(
         var failureMessage: String? = null
         repository.fetchRemoteCapabilities(settings)
             .onSuccess { capabilities ->
+                if (savedSettingsMatch(lane, settings)) {
+                    repository.cacheDelegatedCapabilitySnapshot(
+                        slot = lane.toDelegatedExecutorSlot(),
+                        capabilities = capabilities,
+                        checkedAtEpochMillis = refreshStartedAt,
+                    )
+                }
                 _capabilityState.update { current ->
                     when (lane) {
                         DelegatedCapabilityLane.PRIMARY -> current.copy(
@@ -582,36 +595,70 @@ class NmapToolViewModel(
         }
     }
 
-    private fun delegatedCandidate(
-        id: String,
-        label: String,
-        configured: Boolean,
-        capabilities: RemoteCapabilitiesResponse?,
-        stale: Boolean,
-        fallbackKind: ExecutorNodeKind,
-    ): DelegatedExecutorRoutingCandidate = DelegatedExecutorRoutingCandidate(
-        id = id,
-        label = label,
-        configured = configured,
-        kind = capabilities?.executorNodeKind ?: fallbackKind,
-        allowedTargetScopes = capabilities?.allowedTargetScopes?.ifEmpty { allTargetTopologyScopes.toSet() }
-            ?: defaultTargetScopesForKind(fallbackKind),
-        capabilitiesFresh = capabilities != null && !stale,
+    private fun delegatedExecutorRecords(): List<DelegatedExecutorEndpointRecord> = listOf(
+        DelegatedExecutorEndpointRecord(
+            slot = DelegatedExecutorSlot.PRIMARY,
+            label = "Primary delegated executor",
+            settings = RemoteEndpointSettings(
+                baseUrl = remoteSettings.value.baseUrl,
+                bearerToken = remoteSettings.value.bearerToken,
+            ),
+            fallbackKind = ExecutorNodeKind.REMOTE_NMAP,
+            capabilities = capabilityState.value.capabilities,
+            capabilitiesCheckedAtEpochMillis = capabilityState.value.lastCheckedAtEpochMillis,
+            capabilitiesStale = capabilityState.value.stale,
+        ),
+        DelegatedExecutorEndpointRecord(
+            slot = DelegatedExecutorSlot.LAN_AGENT,
+            label = "LAN agent",
+            settings = RemoteEndpointSettings(
+                baseUrl = remoteSettings.value.lanAgentBaseUrl,
+                bearerToken = remoteSettings.value.lanAgentBearerToken,
+            ),
+            fallbackKind = ExecutorNodeKind.LAN_AGENT,
+            capabilities = capabilityState.value.lanAgentCapabilities,
+            capabilitiesCheckedAtEpochMillis = capabilityState.value.lanAgentLastCheckedAtEpochMillis,
+            capabilitiesStale = capabilityState.value.lanAgentStale,
+        ),
     )
 
-    private fun defaultTargetScopesForKind(kind: ExecutorNodeKind): Set<TargetTopologyScope> = when (kind) {
-        ExecutorNodeKind.LAN_AGENT -> setOf(
-            TargetTopologyScope.PRIVATE_LAN,
-            TargetTopologyScope.LINK_LOCAL,
-            TargetTopologyScope.LOOPBACK,
-            TargetTopologyScope.CARRIER_GRADE_NAT,
-            TargetTopologyScope.HOSTNAME_OR_UNRESOLVED,
-            TargetTopologyScope.UNKNOWN,
-        )
-        ExecutorNodeKind.REMOTE_NMAP,
-        ExecutorNodeKind.ANDROID_LOCAL,
-        ExecutorNodeKind.UNKNOWN,
-        -> allTargetTopologyScopes.toSet()
+    private fun savedSettingsMatch(
+        lane: DelegatedCapabilityLane,
+        settings: RemoteEndpointSettings,
+    ): Boolean {
+        val saved = repository.readDelegatedExecutorSettings()
+        val currentSaved = when (lane) {
+            DelegatedCapabilityLane.PRIMARY -> saved.primary
+            DelegatedCapabilityLane.LAN_AGENT -> saved.lanAgent
+        }
+        return currentSaved.baseUrl.trim() == settings.baseUrl.trim() &&
+            currentSaved.bearerToken.trim() == settings.bearerToken.trim()
+    }
+
+    private fun DelegatedCapabilityLane.toDelegatedExecutorSlot(): DelegatedExecutorSlot = when (this) {
+        DelegatedCapabilityLane.PRIMARY -> DelegatedExecutorSlot.PRIMARY
+        DelegatedCapabilityLane.LAN_AGENT -> DelegatedExecutorSlot.LAN_AGENT
+    }
+
+    private fun applyDelegatedCompatibilityMessage(
+        guidance: ExecutionGuidance,
+        compatibilityMessage: String?,
+        executionPreference: ExecutionPreference,
+    ): ExecutionGuidance {
+        if (compatibilityMessage.isNullOrBlank()) {
+            return guidance
+        }
+        return when {
+            guidance.status == ExecutionGuidanceStatus.BLOCKED || executionPreference == ExecutionPreference.REMOTE_ONLY -> guidance.copy(
+                status = ExecutionGuidanceStatus.BLOCKED,
+                blockers = (guidance.blockers + compatibilityMessage).distinct(),
+            )
+
+            else -> guidance.copy(
+                warnings = (guidance.warnings + compatibilityMessage).distinct(),
+                status = ExecutionGuidanceStatus.CAUTION,
+            )
+        }
     }
 
     private fun recalculate(state: ScanBuilderUiState): ScanBuilderUiState {
@@ -662,71 +709,44 @@ class NmapToolViewModel(
         }
         val capabilitySnapshot = capabilityState.value
         val localCapabilitySnapshot = localCapabilityState.value.capabilities
-        val delegatedRoutingCandidates = buildList {
-            add(
-                delegatedCandidate(
-                    id = PRIMARY_EXECUTOR_CANDIDATE_ID,
-                    label = "Primary delegated executor",
-                    configured = remoteSettings.value.baseUrl.isNotBlank(),
-                    capabilities = capabilitySnapshot.capabilities,
-                    stale = capabilitySnapshot.stale,
-                    fallbackKind = ExecutorNodeKind.REMOTE_NMAP,
-                ),
-            )
-            add(
-                delegatedCandidate(
-                    id = LAN_AGENT_EXECUTOR_CANDIDATE_ID,
-                    label = "LAN agent",
-                    configured = remoteSettings.value.lanAgentBaseUrl.isNotBlank(),
-                    capabilities = capabilitySnapshot.lanAgentCapabilities,
-                    stale = capabilitySnapshot.lanAgentStale,
-                    fallbackKind = ExecutorNodeKind.LAN_AGENT,
-                ),
-            )
-        }
-        val delegatedSelection = DelegatedExecutorRoutingAdvisor.select(
+        val delegatedRecords = delegatedExecutorRecords()
+        val delegatedSelection = DelegatedExecutorResolver.select(
             targets = targets,
-            candidates = delegatedRoutingCandidates,
+            records = delegatedRecords,
         )
-        val selectedRemoteCapabilities = when (delegatedSelection?.candidateId) {
-            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentCapabilities
-            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.capabilities
-            else -> capabilitySnapshot.capabilities ?: capabilitySnapshot.lanAgentCapabilities
-        }
-        val selectedRemoteCapabilitiesStale = when (delegatedSelection?.candidateId) {
-            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentStale
-            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.stale
-            else -> capabilitySnapshot.stale || capabilitySnapshot.lanAgentStale
-        }
-        val selectedRemoteLastCheckedAt = when (delegatedSelection?.candidateId) {
-            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentLastCheckedAtEpochMillis
-            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lastCheckedAtEpochMillis
-            else -> capabilitySnapshot.lastCheckedAtEpochMillis ?: capabilitySnapshot.lanAgentLastCheckedAtEpochMillis
-        }
-        val selectedRemoteLoading = when (delegatedSelection?.candidateId) {
-            LAN_AGENT_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.lanAgentLoading
-            PRIMARY_EXECUTOR_CANDIDATE_ID -> capabilitySnapshot.loading
-            else -> capabilitySnapshot.loading || capabilitySnapshot.lanAgentLoading
-        }
+        val delegatedCompatibilityMessage = DelegatedExecutorResolver.incompatibilityMessage(
+            targets = targets,
+            records = delegatedRecords,
+        )
         val baseGuidance = ExecutionGuidanceAdvisor.analyze(
             tool = state.tool,
             targets = targets,
             executionPreference = state.executionPreference,
             arguments = effectiveArgumentTokens,
-            remoteConfigured = delegatedRoutingCandidates.any { it.configured },
-            remoteCapabilities = selectedRemoteCapabilities,
-            remoteCapabilitiesStale = selectedRemoteCapabilitiesStale,
+            remoteConfigured = delegatedSelection != null,
+            remoteCapabilities = delegatedSelection?.capabilities,
+            remoteCapabilitiesStale = delegatedSelection?.capabilitiesStale ?: false,
             localCapabilities = localCapabilitySnapshot,
             scheduleEnabled = state.scheduleEnabled,
         )
+        val compatibilityAwareGuidance = applyDelegatedCompatibilityMessage(
+            guidance = baseGuidance,
+            compatibilityMessage = delegatedCompatibilityMessage,
+            executionPreference = state.executionPreference,
+        )
         val executionGuidance = if (issues.isNotEmpty()) {
-            baseGuidance.copy(
+            compatibilityAwareGuidance.copy(
                 status = ExecutionGuidanceStatus.BLOCKED,
                 summary = "Resolve builder issues before execution readiness can be trusted.",
-                blockers = (listOf("Resolve the builder issues shown below.") + baseGuidance.blockers).distinct(),
+                blockers = (listOf("Resolve the builder issues shown below.") + compatibilityAwareGuidance.blockers).distinct(),
             )
         } else {
-            baseGuidance
+            compatibilityAwareGuidance
+        }
+        val delegatedLoading = when (delegatedSelection?.slot) {
+            DelegatedExecutorSlot.PRIMARY -> capabilitySnapshot.loading
+            DelegatedExecutorSlot.LAN_AGENT -> capabilitySnapshot.lanAgentLoading
+            null -> capabilitySnapshot.loading || capabilitySnapshot.lanAgentLoading
         }
 
         return state.copy(
@@ -735,10 +755,10 @@ class NmapToolViewModel(
             builderIssues = issues.distinct(),
             executionGuidance = executionGuidance,
             delegatedExecutorContextLabel = delegatedSelection?.label,
-            delegatedExecutorSelectionReason = delegatedSelection?.reason,
-            delegatedLastCheckedAtEpochMillis = selectedRemoteLastCheckedAt,
-            delegatedCapabilitiesLoading = selectedRemoteLoading,
-            delegatedCapabilitiesStale = selectedRemoteCapabilitiesStale,
+            delegatedExecutorSelectionReason = delegatedSelection?.routingReason ?: delegatedCompatibilityMessage,
+            delegatedLastCheckedAtEpochMillis = delegatedSelection?.capabilitiesCheckedAtEpochMillis,
+            delegatedCapabilitiesLoading = delegatedLoading,
+            delegatedCapabilitiesStale = delegatedSelection?.capabilitiesStale ?: false,
         )
     }
 
@@ -766,9 +786,6 @@ class NmapToolViewModel(
     }
 
     companion object {
-        private const val PRIMARY_EXECUTOR_CANDIDATE_ID = "primary-delegated-executor"
-        private const val LAN_AGENT_EXECUTOR_CANDIDATE_ID = "delegated-lan-agent"
-
         fun factory(
             repository: DefaultScanRepository,
             automationScheduler: AutomationScheduler,

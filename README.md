@@ -137,6 +137,7 @@ This project chooses correctness over false claims:
 - Delegated executor settings with **Android Keystore-encrypted bearer token storage**
 - Capability refresh from delegated executors
 - Automatic capability re-check after saving delegated executor settings
+- Persisted last-known delegated capability snapshots for cold-start visibility and scheduled-run routing against saved settings
 - Capability staleness tracking when settings are edited after a refresh
 - Shared executor capability profiles for Android-local and delegated execution nodes, including feature matrices and execution limits
 - Delegated capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
@@ -267,18 +268,19 @@ export NPING_BINARY="nping"
    - an optional LAN agent near the private network you want to scan.
 3. Open **Settings** and configure the primary delegated executor and, when needed, the LAN-agent base URL plus optional bearer tokens.
 4. Refresh capabilities to confirm each delegated backend sees `nmap`, `ncat`, and `nping`, advertises the expected executor role, and reports the intended target-topology policy. Use **Refresh local snapshot** to review stock-device limits.
-5. Build a profile in **Builder** using:
+5. Save those settings once the endpoints are correct so the app can retain the last verified delegated capability snapshots for restart-safe guidance and scheduled routing.
+6. Build a profile in **Builder** using:
    - targets,
    - tool selection,
    - structured Nmap controls where applicable,
    - extra expert arguments,
    - execution mode,
    - optional recurring schedule.
-6. Review the live effective-argument preview, command preview, and execution-guidance card to see whether the profile is Android-local compatible or should route to a delegated executor.
-7. Save the profile and run it manually or let automation trigger it.
-8. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
-9. Inspect status, logs, parsed findings, run-to-run deltas, and request/executor audit metadata in **History**.
-10. Generate a Markdown or CSV report preview from saved history, then copy it, export it to a document destination, or share it through Android's share sheet.
+7. Review the live effective-argument preview, command preview, and execution-guidance card to see whether the profile is Android-local compatible or should route to a delegated executor.
+8. Save the profile and run it manually or let automation trigger it.
+9. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
+10. Inspect status, logs, parsed findings, run-to-run deltas, and request/executor audit metadata in **History**.
+11. Generate a Markdown or CSV report preview from saved history, then copy it, export it to a document destination, or share it through Android's share sheet.
 
 ## Result summaries
 

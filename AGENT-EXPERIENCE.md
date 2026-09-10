@@ -214,3 +214,34 @@ This document records development observations, constraints, trade-offs, and lea
 - Once multiple executors exist, “remote configured” is too coarse. The UI and contracts need to express **which executor** is expected to run a scan and why.
 - Capability freshness matters more when routing becomes topology-aware; otherwise the client can make confident-sounding but poorly grounded decisions.
 - Security-sensitive mobile tooling benefits from modeling trust boundaries explicitly, even for something as simple as storing two different API tokens.
+
+## 2026-09-10 — Persisted delegated capability snapshots and routing alignment
+
+### Why this follow-up was necessary
+- After the LAN-agent batch, there was still an architectural gap: the Compose UI could reason about delegated capability data in memory, but scheduled/background execution only had saved endpoints, not saved capability context.
+- There was also a correctness bug in builder guidance: if some delegated executor was configured but none actually matched the current target topology, the builder could still sound more remote-ready than the runtime really was.
+
+### What changed conceptually
+- I treated **last verified delegated capability data** as part of the saved execution environment, not as throwaway UI state.
+- I also tightened the rule that guidance and runtime should not disagree about whether a compatible delegated route really exists for the current targets.
+
+### Implementation notes
+- The Android settings store now persists per-slot delegated capability snapshots for:
+  - the primary delegated executor
+  - the LAN agent
+- Those snapshots are automatically invalidated when the saved endpoint URL or token changes, which avoids silently applying stale policy/tool metadata to a different executor.
+- A shared app-level delegated-executor resolver now bridges:
+  - saved endpoint settings,
+  - cached capability metadata,
+  - target-topology routing heuristics.
+- The ViewModel loads cached delegated capability snapshots on startup, while the repository reuses them during scheduled/manual execution when choosing the delegated endpoint.
+
+### Trade-offs and constraints
+- I intentionally kept snapshot persistence scoped to **saved settings** only. Manual capability refreshes against unsaved edits still update the current screen, but they are not treated as durable execution policy for automation.
+- Snapshot age is preserved, but there is still no time-based expiry policy yet; the product currently treats staleness primarily as “edited since refresh,” not “older than N hours.”
+- Because JDK 17 is still unavailable here, I relied on static review and incremental shared-test additions rather than claiming Android/Gradle verification.
+
+### Lessons reinforced
+- In a scheduled security tool, volatile UI state is not enough; routing-critical capability information needs a persistence strategy.
+- Configuration validity is broader than URL syntax. Capability caches must also be invalidated when authentication context changes.
+- The more the product promises capability-aware execution, the more important it becomes to make planner language conservative whenever topology/policy compatibility is unresolved.

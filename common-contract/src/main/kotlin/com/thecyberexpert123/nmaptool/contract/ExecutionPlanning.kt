@@ -232,15 +232,16 @@ object ExecutionGuidanceAdvisor {
         ToolType.NCAT -> emptyList()
     }
 
-    private fun RemoteCapabilitiesResponse.isToolAvailable(tool: ToolType): Boolean = when (tool) {
-        ToolType.NMAP -> nmapAvailable
-        ToolType.NCAT -> ncatAvailable
-        ToolType.NPING -> npingAvailable
-    }
+}
 
-    private fun RemoteCapabilitiesResponse.versionBannerFor(tool: ToolType): String? = when (tool) {
-        ToolType.NMAP -> nmapVersion
-        ToolType.NCAT -> ncatVersion
-        ToolType.NPING -> npingVersion
-    }
+fun RemoteCapabilitiesResponse.isToolAvailable(tool: ToolType): Boolean = when (tool) {
+    ToolType.NMAP -> nmapAvailable
+    ToolType.NCAT -> ncatAvailable
+    ToolType.NPING -> npingAvailable
+}
+
+fun RemoteCapabilitiesResponse.versionBannerFor(tool: ToolType): String? = when (tool) {
+    ToolType.NMAP -> nmapVersion
+    ToolType.NCAT -> ncatVersion
+    ToolType.NPING -> npingVersion
 }
