@@ -114,6 +114,38 @@ This document records development observations, constraints, trade-offs, and lea
 - Pseudo-Nmap-compatible local output can still be worthwhile when it feeds a shared history/reporting pipeline, but only if the accompanying messages and guidance clearly state that the engine is connect-based and not a raw-packet parity layer.
 - Once the product is viewed as a distributed scanning system, route labels alone become too weak. Shared executor capability profiles are a better abstraction because they let the UI describe what a node can do, how it is reached, and why a given scan should be delegated there.
 
+## 2026-09-10 — Android-local Phase B service identification
+
+### Why this batch was the right next step
+- After adding shared executor capability profiles, the next highest-value improvement was not more UI polish; it was making the Android-local route slightly more useful without pretending it had raw-packet parity.
+- `-sV` was already present in the builder controls, so the honest product gap was that Android-local planning still treated all service detection as impossible instead of distinguishing between curated local identification and real delegated Nmap version probing.
+
+### What changed conceptually
+- I kept the core rule intact: Android-local mode still must not impersonate full Nmap behavior.
+- Instead of treating `-sV` as binary supported/unsupported, I modeled it as a **limited local capability**:
+  - local execution can attempt curated protocol identification for selected TCP services,
+  - delegated execution remains the better path when the operator expects fuller Nmap semantics.
+- This led to an important routing refinement: AUTO mode can now acknowledge that a bounded local fallback exists while still preferring a delegated executor when available for better parity.
+
+### Implementation notes
+- The safest service-detection techniques for stock Android were application-layer and banner-oriented probes over normal sockets.
+- I limited active probes to protocols where a small, explainable detector is defensible:
+  - HTTP
+  - TLS/HTTPS handshake inspection
+  - SSH banners
+  - banner-style SMTP/POP3/IMAP/FTP identification
+- I also added a per-run ceiling for local service detection so a wide scan does not silently turn into an unbounded second wave of connection attempts.
+
+### Trade-offs and constraints
+- Local TLS identification is observational, not trust-establishing. For scanning usefulness, a permissive TLS handshake is more practical than relying on ordinary certificate trust validation, but the resulting metadata must not be misrepresented as authenticated identity.
+- Local `-sV` still should not dominate AUTO routing when a delegated executor exists, because the delegated route offers semantics closer to actual Nmap version detection.
+- Output formatting had to remain compatible with the existing shared parser/report pipeline, so the local executor emits conservative Nmap-like service/detail lines rather than inventing a brand-new report grammar.
+
+### Lessons reinforced
+- Capability modeling gets much better once support levels can express “limited but real” instead of forcing every feature into a yes/no bucket.
+- For a distributed scanning product, route preference is not just about whether a task can run somewhere; it is also about which route best matches operator intent.
+- Small, well-bounded protocol detectors are more trustworthy than broad claims of parity that the platform cannot honestly deliver.
+
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.
 - Honest capability modeling is essential. A trustworthy security tool must clearly distinguish what it can actually run from what it can only plan or simulate.

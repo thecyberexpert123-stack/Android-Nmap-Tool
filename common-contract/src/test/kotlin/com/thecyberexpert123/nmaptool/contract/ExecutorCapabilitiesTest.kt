@@ -14,9 +14,11 @@ class ExecutorCapabilitiesTest {
             activeNetworkSummary = "Wi-Fi — validated internet",
             supportsTcpConnectScan = true,
             supportsUdpDatagramProbes = true,
+            supportsServiceDetection = true,
             maxTargetsPerRun = 16,
             maxPortsPerTarget = 256,
             maxTotalProbes = 1024,
+            maxServiceDetectionsPerRun = 32,
         ).toExecutorCapabilityProfile()
 
         assertEquals("android-local", profile.id)
@@ -26,12 +28,17 @@ class ExecutorCapabilitiesTest {
             it.id == ExecutionCapabilityId.TCP_CONNECT_SCAN && it.level == ExecutionCapabilityLevel.SUPPORTED
         })
         assertTrue(profile.capabilities.any {
+            it.id == ExecutionCapabilityId.CURATED_SERVICE_DETECTION &&
+                it.level == ExecutionCapabilityLevel.LIMITED &&
+                it.summary.contains("32 open TCP endpoints per run")
+        })
+        assertTrue(profile.capabilities.any {
             it.id == ExecutionCapabilityId.RAW_PACKET_PROBES && it.level == ExecutionCapabilityLevel.UNSUPPORTED
         })
     }
 
     @Test
-    fun `remote capabilities map to a delegated remote executor profile`() {
+    fun `remote capabilities map to a delegated executor profile`() {
         val response = RemoteCapabilitiesResponse(
             nmapAvailable = true,
             ncatAvailable = true,

@@ -10,6 +10,8 @@ class AndroidLocalExecutionPlannerTest {
         available = true,
         networkAvailable = true,
         activeNetworkSummary = "Wi-Fi — validated internet",
+        supportsServiceDetection = true,
+        maxServiceDetectionsPerRun = 32,
     )
 
     @Test
@@ -25,7 +27,7 @@ class AndroidLocalExecutionPlannerTest {
     }
 
     @Test
-    fun `nmap assessment blocks service detection and cidr targets`() {
+    fun `nmap assessment allows curated service detection but still blocks cidr targets`() {
         val assessment = AndroidLocalExecutionPlanner.assess(
             tool = ToolType.NMAP,
             targets = listOf("192.168.1.0/24"),
@@ -35,7 +37,35 @@ class AndroidLocalExecutionPlannerTest {
 
         assertFalse(assessment.supported)
         assertTrue(assessment.blockers.any { it.contains("discrete hosts only") })
-        assertTrue(assessment.blockers.any { it.contains("does not support -sV") })
+        assertTrue(assessment.warnings.any { it.contains("curated protocol detection") })
+        assertTrue(assessment.notes.any { it.contains("up to 32 open TCP endpoints") })
+        assertTrue(assessment.preferDelegatedWhenAvailable)
+    }
+
+    @Test
+    fun `nmap plan enables curated local service detection when supported`() {
+        val result = AndroidLocalExecutionPlanner.createNmapPlan(
+            arguments = listOf("-Pn", "-sV", "-F", "-T4"),
+            capabilities = capabilities,
+        )
+
+        assertTrue(result.isValid)
+        assertEquals(true, result.value?.enableServiceDetection)
+        assertEquals(true, result.value?.usedCuratedPortCatalog)
+        assertEquals(100, result.value?.ports?.size)
+        assertEquals(2_500, result.value?.connectTimeoutMillis)
+        assertEquals(1_500, result.value?.serviceReadTimeoutMillis)
+    }
+
+    @Test
+    fun `nmap plan blocks service detection when runtime support is unavailable`() {
+        val result = AndroidLocalExecutionPlanner.createNmapPlan(
+            arguments = listOf("-Pn", "-sV", "-p", "443"),
+            capabilities = capabilities.copy(supportsServiceDetection = false),
+        )
+
+        assertFalse(result.isValid)
+        assertTrue(result.issues.any { it.message.contains("-sV requires a delegated executor") })
     }
 
     @Test

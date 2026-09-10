@@ -109,6 +109,7 @@ class AndroidLocalToolExecutor(
             available = connectivityManager != null,
             networkAvailable = activeNetwork != null,
             activeNetworkSummary = activeNetwork?.let(::describeNetworkSummary) ?: "No active default network",
+            supportsServiceDetection = connectivityManager != null,
         )
     }
 
@@ -165,10 +166,12 @@ class AndroidLocalToolExecutor(
             ?: return@withContext buildUnexpectedLocalFailure(startedAt, request, "Android-local Nmap plan became invalid before execution.")
         runCatching {
             val targetResults = request.targets.map { target ->
-                scanTcpTarget(network, target, plan)
+                scanTcpTarget(network, target, plan, capabilities)
             }
             val hostsUp = targetResults.count { it.hostResponsive }
             val openPorts = targetResults.sumOf { result -> result.openPorts.size }
+            val serviceDetectionsPerformed = targetResults.sumOf { it.serviceDetectionsPerformed }
+            val serviceDetectionsSkipped = targetResults.sumOf { it.serviceDetectionsSkipped }
             val stdout = buildString {
                 targetResults.forEach { result ->
                     appendLine("Nmap scan report for ${result.target}")
@@ -182,10 +185,16 @@ class AndroidLocalToolExecutor(
                             },
                         )
                         if (result.openPorts.isNotEmpty()) {
-                            appendLine("PORT     STATE SERVICE")
+                            appendLine(if (plan.enableServiceDetection) "PORT     STATE SERVICE VERSION" else "PORT     STATE SERVICE")
                             result.openPorts.forEach { portResult ->
                                 appendLine(
-                                    "${portResult.port}/tcp open ${commonServiceNames[portResult.port].orEmpty().ifBlank { "unknown" }}",
+                                    buildString {
+                                        append("${portResult.port}/tcp open ${portResult.service}")
+                                        portResult.details.takeIf(String::isNotBlank)?.let {
+                                            append(' ')
+                                            append(it)
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -219,7 +228,17 @@ class AndroidLocalToolExecutor(
                 if (!plan.skipHostDiscovery) {
                     add("Missing -Pn was handled with connect-based reachability inference rather than raw host discovery.")
                 }
-                addAll(targetResults.mapNotNull { it.error })
+                if (plan.enableServiceDetection) {
+                    add("Android-local -sV performed curated service identification rather than full Nmap version detection.")
+                    add("Curated service detections attempted: $serviceDetectionsPerformed")
+                    if (serviceDetectionsSkipped > 0) {
+                        add("Open endpoints left with port-based naming after the per-run service-detection limit: $serviceDetectionsSkipped")
+                    }
+                }
+                targetResults.forEach { result ->
+                    addAll(result.warnings)
+                    result.error?.let(::add)
+                }
             }
             val attemptedTargets = targetResults.count { it.attempted }
             val finishedAt = System.currentTimeMillis()
@@ -229,13 +248,16 @@ class AndroidLocalToolExecutor(
                 commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
                 exitCode = if (attemptedTargets > 0) 0 else 1,
                 stdout = stdout,
-                stderr = stderrLines.joinToString(separator = "\n"),
+                stderr = stderrLines.distinct().joinToString(separator = "\n"),
                 startedAtEpochMillis = startedAt,
                 finishedAtEpochMillis = finishedAt,
                 message = buildString {
                     append("Android-local TCP connect scan completed against ${request.targets.size} target(s). ")
                     append("Open TCP ports found: $openPorts. ")
-                    append("This result reflects socket-level probing only; raw-packet Nmap features remain remote-only.")
+                    if (plan.enableServiceDetection) {
+                        append("Curated service identification attempted on $serviceDetectionsPerformed open endpoint(s). ")
+                    }
+                    append("This result reflects socket-level probing only; raw-packet Nmap features remain delegated-only.")
                     if (attemptedTargets == 0) {
                         append(" No targets could be resolved or probed on the active Android network.")
                     }
@@ -420,6 +442,7 @@ class AndroidLocalToolExecutor(
         network: Network,
         target: String,
         plan: AndroidLocalNmapPlan,
+        capabilities: AndroidLocalCapabilities,
     ): LocalTargetScanResult {
         val address = resolveTargetAddress(network, target)
             ?: return LocalTargetScanResult(
@@ -445,7 +468,30 @@ class AndroidLocalToolExecutor(
                 }
             }.awaitAll()
         }.sortedBy { it.port }
-        val openPorts = portResults.filter { it.outcome == ProbeOutcome.OPEN }
+        val openPortSamples = portResults.filter { it.outcome == ProbeOutcome.OPEN }
+        val serviceDetection = if (plan.enableServiceDetection && openPortSamples.isNotEmpty()) {
+            AndroidLocalServiceDetector.detectOpenTcpServices(
+                network = network,
+                targetLabel = target,
+                targetAddress = address,
+                openPorts = openPortSamples.map { it.port },
+                connectTimeoutMillis = plan.connectTimeoutMillis,
+                readTimeoutMillis = plan.serviceReadTimeoutMillis,
+                maxConcurrency = plan.maxConcurrency,
+                maxDetections = capabilities.maxServiceDetectionsPerRun,
+            )
+        } else {
+            null
+        }
+        val openPorts = openPortSamples.map { portSample ->
+            val detected = serviceDetection?.findingsByPort?.get(portSample.port)
+            LocalOpenPortResult(
+                port = portSample.port,
+                service = detected?.serviceName ?: commonServiceNames[portSample.port].orEmpty().ifBlank { "unknown" },
+                details = detected?.details.orEmpty(),
+                rttMillis = portSample.rttMillis,
+            )
+        }
         return LocalTargetScanResult(
             target = target,
             attempted = true,
@@ -454,6 +500,9 @@ class AndroidLocalToolExecutor(
             closedPortCount = portResults.count { it.outcome == ProbeOutcome.CLOSED },
             filteredPortCount = portResults.count { it.outcome == ProbeOutcome.TIMEOUT },
             bestLatencyMillis = portResults.mapNotNull { it.rttMillis }.minOrNull(),
+            warnings = serviceDetection?.warnings.orEmpty(),
+            serviceDetectionsPerformed = serviceDetection?.attemptedCount ?: 0,
+            serviceDetectionsSkipped = serviceDetection?.skippedCount ?: 0,
             error = null,
         )
     }
@@ -632,11 +681,21 @@ class AndroidLocalToolExecutor(
         val target: String,
         val attempted: Boolean,
         val hostResponsive: Boolean,
-        val openPorts: List<ProbeSample>,
+        val openPorts: List<LocalOpenPortResult>,
         val closedPortCount: Int,
         val filteredPortCount: Int,
         val bestLatencyMillis: Long?,
+        val warnings: List<String> = emptyList(),
+        val serviceDetectionsPerformed: Int = 0,
+        val serviceDetectionsSkipped: Int = 0,
         val error: String?,
+    )
+
+    private data class LocalOpenPortResult(
+        val port: Int,
+        val service: String,
+        val details: String = "",
+        val rttMillis: Long? = null,
     )
 
     private data class TcpSessionProbeResult(

@@ -40,13 +40,13 @@ class DisabledLocalToolExecutor : LocalToolExecutor {
         networkAvailable = false,
         supportsTcpConnectScan = false,
         supportsUdpDatagramProbes = false,
-        advisory = "Android-local execution is disabled in this runtime. Configure a remote executor for actual scan execution.",
+        advisory = "Android-local execution is disabled in this runtime. Configure a delegated executor for actual scan execution.",
     )
 
     override suspend fun inspect(request: ToolInvocationRequest): LocalExecutionDecision =
         LocalExecutionDecision(
             canExecute = false,
-            reason = "Android-local execution is disabled in this runtime. Configure a remote executor for actual scan execution.",
+            reason = "Android-local execution is disabled in this runtime. Configure a delegated executor for actual scan execution.",
             blockers = listOf("Android-local execution is disabled in this runtime."),
         )
 

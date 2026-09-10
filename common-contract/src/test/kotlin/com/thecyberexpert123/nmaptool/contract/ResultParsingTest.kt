@@ -83,6 +83,31 @@ class ResultParsingTest {
     }
 
     @Test
+    fun `nmap text parser keeps android local curated service details`() {
+        val stdout = """
+            Nmap scan report for 192.168.1.10
+            Host is up (18ms latency).
+            PORT     STATE SERVICE VERSION
+            22/tcp open ssh android-local sV: banner SSH-2.0-OpenSSH_8.4
+            443/tcp open https android-local sV: TLS TLSv1.3; cipher TLS_AES_128_GCM_SHA256; HTTP/1.1 200 OK; Server: nginx
+            Nmap done: 1 IP addresses (1 hosts up) scanned in 2.00 seconds
+        """.trimIndent()
+
+        val summary = ToolResultParser.parse(
+            tool = ToolType.NMAP,
+            status = RunStatus.SUCCEEDED,
+            exitCode = 0,
+            stdout = stdout,
+            stderr = "",
+        )
+
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
+        assertEquals(2, summary.portFindings.size)
+        assertEquals("android-local sV: banner SSH-2.0-OpenSSH_8.4", summary.portFindings.first().details)
+        assertTrue(summary.portFindings.any { it.service == "https" && it.details.contains("Server: nginx") })
+    }
+
+    @Test
     fun `nmap parser warns when structured xml is omitted because of capture limits`() {
         val stdout = """
             Nmap scan report for 192.168.1.10

@@ -41,7 +41,7 @@ private val curatedTcpPortCatalog = listOf(
 )
 
 private const val defaultLocalAdvisory =
-    "Android-local execution uses permitted socket APIs for TCP connect scans and limited TCP/UDP probes. It does not provide raw packets, NSE parity, traceroute, or Nmap -O parity on stock Android."
+    "Android-local execution uses permitted socket APIs for TCP connect scans, curated service identification, and limited TCP/UDP probes. It does not provide raw packets, NSE parity, traceroute, or Nmap -O parity on stock Android."
 
 data class AndroidLocalCapabilities(
     val available: Boolean = true,
@@ -59,12 +59,14 @@ data class AndroidLocalCapabilities(
     val maxPortsPerTarget: Int = 256,
     val maxTargetsPerRun: Int = 16,
     val maxTotalProbes: Int = 1024,
+    val maxServiceDetectionsPerRun: Int = 32,
     val advisory: String = defaultLocalAdvisory,
 )
 
 data class AndroidLocalExecutionAssessment(
     val supported: Boolean,
     val summary: String,
+    val preferDelegatedWhenAvailable: Boolean = false,
     val blockers: List<String> = emptyList(),
     val warnings: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
@@ -73,7 +75,9 @@ data class AndroidLocalExecutionAssessment(
 data class AndroidLocalNmapPlan(
     val ports: List<Int>,
     val skipHostDiscovery: Boolean,
+    val enableServiceDetection: Boolean,
     val connectTimeoutMillis: Int,
+    val serviceReadTimeoutMillis: Int,
     val maxConcurrency: Int,
     val usedCuratedPortCatalog: Boolean,
     val topPortsRequested: Int? = null,
@@ -141,6 +145,8 @@ object AndroidLocalExecutionPlanner {
             }
         }
 
+        var preferDelegatedWhenAvailable = false
+
         when (tool) {
             ToolType.NMAP -> {
                 val planResult = createNmapPlan(arguments, capabilities)
@@ -163,7 +169,16 @@ object AndroidLocalExecutionPlanner {
                             "Android-local -F uses the app's curated fast TCP port catalog, not Nmap's exact service-frequency database."
                         }
                     }
-                    notes += "Android-local Nmap mode supports TCP connect scanning only in this phase-A baseline."
+                    if (plan.enableServiceDetection) {
+                        warnings += "Android-local -sV uses curated protocol detection for selected services and is not full Nmap version-detection parity."
+                        notes += "Android-local curated service identification will probe up to ${capabilities.maxServiceDetectionsPerRun} open TCP endpoints per run."
+                        preferDelegatedWhenAvailable = true
+                    }
+                    notes += if (plan.enableServiceDetection) {
+                        "Android-local Nmap mode supports TCP connect scanning with limited curated service detection in this phase-B baseline."
+                    } else {
+                        "Android-local Nmap mode supports bounded TCP connect scanning in this phase-B baseline."
+                    }
                 }
             }
 
@@ -192,6 +207,7 @@ object AndroidLocalExecutionPlanner {
 
         val supported = blockers.isEmpty()
         val summary = when {
+            supported && tool == ToolType.NMAP && preferDelegatedWhenAvailable -> "Android-local TCP connect scanning with curated service identification is available for this profile."
             supported && tool == ToolType.NMAP -> "Android-local TCP connect scanning is available for this profile."
             supported && tool == ToolType.NCAT -> "Android-local TCP session probing is available for this profile."
             supported && tool == ToolType.NPING -> "Android-local latency probing is available for this profile."
@@ -202,6 +218,7 @@ object AndroidLocalExecutionPlanner {
         return AndroidLocalExecutionAssessment(
             supported = supported,
             summary = summary,
+            preferDelegatedWhenAvailable = preferDelegatedWhenAvailable,
             blockers = blockers.distinct(),
             warnings = warnings.distinct(),
             notes = notes.distinct(),
@@ -214,6 +231,7 @@ object AndroidLocalExecutionPlanner {
     ): ValidationResult<AndroidLocalNmapPlan> {
         val issues = mutableListOf<ValidationIssue>()
         var skipHostDiscovery = false
+        var enableServiceDetection = false
         var useFastCatalog = false
         var explicitPortSpec: String? = null
         var topPorts: Int? = null
@@ -225,6 +243,16 @@ object AndroidLocalExecutionPlanner {
             when {
                 argument == "-Pn" -> skipHostDiscovery = true
                 argument == "-sT" -> Unit
+                argument == "-sV" -> {
+                    if (capabilities.supportsServiceDetection) {
+                        enableServiceDetection = true
+                    } else {
+                        issues += ValidationIssue(
+                            "arguments[$index]",
+                            "Android-local service detection is not available in this runtime, so -sV requires a delegated executor.",
+                        )
+                    }
+                }
                 argument == "-n" -> Unit
                 argument == "--unprivileged" -> Unit
                 argument == "-F" -> useFastCatalog = true
@@ -260,13 +288,12 @@ object AndroidLocalExecutionPlanner {
                     }
                 }
 
-                argument == "-sV" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sV service detection. Use a delegated executor for real Nmap service/version probing.")
-                argument == "-sC" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sC default scripts. Use a delegated executor for NSE/script execution.")
-                argument == "-O" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -O OS detection parity. Use a delegated executor for real Nmap OS fingerprinting.")
-                argument == "--traceroute" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support traceroute. Use a delegated executor when traceroute is required.")
-                argument == "--script" || argument.startsWith("--script=") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support NSE script selection. Use a delegated executor for script-backed scans.")
+                argument == "-sC" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-B Nmap mode does not support -sC default scripts. Use a delegated executor for NSE/script execution.")
+                argument == "-O" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-B Nmap mode does not support -O OS detection parity. Use a delegated executor for real Nmap OS fingerprinting.")
+                argument == "--traceroute" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-B Nmap mode does not support traceroute. Use a delegated executor when traceroute is required.")
+                argument == "--script" || argument.startsWith("--script=") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-B Nmap mode does not support NSE script selection. Use a delegated executor for script-backed scans.")
                 argument in androidLocalNmapRawFlags -> issues += ValidationIssue("arguments[$index]", "$argument requires lower-level/raw packet behavior that stock Android app execution does not provide.")
-                argument.startsWith("-") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support option $argument.")
+                argument.startsWith("-") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-B Nmap mode does not support option $argument.")
                 else -> issues += ValidationIssue("arguments[$index]", "Unexpected positional token in Android-local Nmap arguments: $argument")
             }
             index += 1
@@ -289,7 +316,7 @@ object AndroidLocalExecutionPlanner {
                     requested > curatedTcpPortCatalog.size -> {
                         issues += ValidationIssue(
                             "arguments",
-                            "Android-local phase-A Nmap mode supports at most ${curatedTcpPortCatalog.size} curated top ports.",
+                            "Android-local phase-B Nmap mode supports at most ${curatedTcpPortCatalog.size} curated top ports.",
                         )
                         null
                     }
@@ -302,7 +329,7 @@ object AndroidLocalExecutionPlanner {
             else -> {
                 issues += ValidationIssue(
                     "arguments",
-                    "Android-local phase-A Nmap mode requires an explicit TCP port strategy such as -p, --top-ports, or -F.",
+                    "Android-local phase-B Nmap mode requires an explicit TCP port strategy such as -p, --top-ports, or -F.",
                 )
                 null
             }
@@ -317,7 +344,9 @@ object AndroidLocalExecutionPlanner {
             AndroidLocalNmapPlan(
                 ports = ports,
                 skipHostDiscovery = skipHostDiscovery,
+                enableServiceDetection = enableServiceDetection,
                 connectTimeoutMillis = timingPolicy.connectTimeoutMillis,
+                serviceReadTimeoutMillis = timingPolicy.responseTimeoutMillis,
                 maxConcurrency = timingPolicy.maxConcurrency,
                 usedCuratedPortCatalog = useFastCatalog || topPorts != null,
                 topPortsRequested = topPorts,
@@ -533,7 +562,7 @@ object AndroidLocalExecutionPlanner {
             when {
                 token.contains(':') -> issues += ValidationIssue(
                     field = "arguments[$index]",
-                    message = "Android-local phase-A Nmap mode supports TCP port numbers and ranges only, not protocol-qualified port specs: $token",
+                    message = "Android-local phase-B Nmap mode supports TCP port numbers and ranges only, not protocol-qualified port specs: $token",
                 )
 
                 '-' in token -> {
@@ -543,7 +572,7 @@ object AndroidLocalExecutionPlanner {
                     if (start == null || end == null || start !in 1..65535 || end !in 1..65535 || start > end) {
                         issues += ValidationIssue(
                             field = "arguments[$index]",
-                            message = "Invalid TCP port range for Android-local phase-A Nmap mode: $token",
+                            message = "Invalid TCP port range for Android-local phase-B Nmap mode: $token",
                         )
                     } else {
                         (start..end).forEach(ports::add)
@@ -555,7 +584,7 @@ object AndroidLocalExecutionPlanner {
                     if (value == null || value !in 1..65535) {
                         issues += ValidationIssue(
                             field = "arguments[$index]",
-                            message = "Invalid TCP port for Android-local phase-A Nmap mode: $token",
+                            message = "Invalid TCP port for Android-local phase-B Nmap mode: $token",
                         )
                     } else {
                         ports += value
@@ -565,7 +594,7 @@ object AndroidLocalExecutionPlanner {
         }
 
         if (ports.isEmpty()) {
-            issues += ValidationIssue("arguments", "Android-local phase-A Nmap mode requires at least one valid TCP port.")
+            issues += ValidationIssue("arguments", "Android-local phase-B Nmap mode requires at least one valid TCP port.")
         }
 
         return if (issues.isEmpty()) {

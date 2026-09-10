@@ -93,6 +93,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Added shared executor capability-profile models covering executor kind, transport, feature matrix, and execution limits.
 - Added delegated-executor capability profile publishing on the remote backend and standardized profile rendering in the Android UI.
 - Updated execution guidance to surface the likely executor node, not just the likely route.
+- Added Android-local phase-B Nmap service identification for bounded `-sV` flows using curated protocol detection instead of pretending full local version-detection parity.
+- Added Android-local probes for HTTP, TLS/HTTPS, SSH, and banner-oriented protocols so local Nmap-style output can preserve useful service/detail lines in saved history.
+- Updated Android-local planning, guidance, and capability reporting so local `-sV` is exposed as a limited capability, bounded per run, and still prefers a delegated executor in AUTO mode when broader Nmap semantics are available.
+- Added shared test coverage for phase-B local `-sV` planning, executor capability mapping, delegated-preference routing, and parsing of Android-local service-detail lines.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

@@ -95,8 +95,9 @@ object ExecutionGuidanceAdvisor {
             ExecutionPreference.LOCAL_ONLY -> if (localAssessment.supported) ExecutionRoute.LOCAL else null
             ExecutionPreference.REMOTE_ONLY -> if (remoteConfigured) ExecutionRoute.REMOTE else null
             ExecutionPreference.AUTO -> when {
-                localAssessment.supported -> ExecutionRoute.LOCAL
+                localAssessment.supported && !(localAssessment.preferDelegatedWhenAvailable && remoteConfigured) -> ExecutionRoute.LOCAL
                 remoteConfigured -> ExecutionRoute.REMOTE
+                localAssessment.supported -> ExecutionRoute.LOCAL
                 else -> null
             }
         }
@@ -104,7 +105,7 @@ object ExecutionGuidanceAdvisor {
             ExecutionRoute.LOCAL -> localCapabilities.toExecutorCapabilityProfile().label
             ExecutionRoute.REMOTE -> remoteCapabilities?.executorProfile?.label
                 ?: remoteCapabilities?.executorLabel?.takeIf(String::isNotBlank)
-                ?: "Delegated remote Nmap executor"
+                ?: "Delegated Nmap executor"
             ExecutionRoute.BLOCKED, null -> null
         }
 
@@ -118,13 +119,22 @@ object ExecutionGuidanceAdvisor {
             }
         }
 
-        if (executionPreference == ExecutionPreference.AUTO && !localAssessment.supported && remoteConfigured) {
-            notes += "AUTO will currently route this profile to the delegated executor because Android-local execution is not viable for this profile."
+        if (executionPreference == ExecutionPreference.AUTO && remoteConfigured) {
+            when {
+                !localAssessment.supported -> {
+                    notes += "AUTO will currently route this profile to the delegated executor because Android-local execution is not viable for this profile."
+                }
+                localAssessment.preferDelegatedWhenAvailable -> {
+                    notes += "AUTO will currently prefer the delegated executor because the selected profile exceeds Android-local parity expectations even though a bounded local fallback exists."
+                }
+            }
         }
 
         if (likelyRoute == ExecutionRoute.LOCAL) {
             warnings += localAssessment.warnings
             notes += localAssessment.notes
+        } else if (localAssessment.supported && localAssessment.preferDelegatedWhenAvailable) {
+            notes += localAssessment.warnings.map { warning -> "Local route limitation: $warning" }
         } else if (!localAssessment.supported) {
             notes += localAssessment.blockers.map { blocker -> "Local route limitation: $blocker" }
         }

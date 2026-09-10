@@ -107,9 +107,9 @@ fun AndroidLocalCapabilities.toExecutorCapabilityProfile(
         ),
         ExecutionCapabilityDescriptor(
             id = ExecutionCapabilityId.CURATED_SERVICE_DETECTION,
-            level = if (supportsServiceDetection) ExecutionCapabilityLevel.LIMITED else ExecutionCapabilityLevel.UNSUPPORTED,
+            level = if (supportsServiceDetection && networkAvailable) ExecutionCapabilityLevel.LIMITED else ExecutionCapabilityLevel.UNSUPPORTED,
             summary = if (supportsServiceDetection) {
-                "Curated Android-local service detection is enabled for selected protocols."
+                "Curated Android-local service detection is enabled for selected protocols and bounded to $maxServiceDetectionsPerRun open TCP endpoints per run."
             } else {
                 "Curated Android-local service detection is not implemented in this phase yet."
             },
@@ -169,7 +169,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
 ): ExecutorCapabilityProfile {
     val label = labelOverride?.takeIf(String::isNotBlank)
         ?: executorLabel?.takeIf(String::isNotBlank)
-        ?: "Delegated remote Nmap executor"
+        ?: "Delegated Nmap executor"
     return ExecutorCapabilityProfile(
         id = executorLabel?.takeIf(String::isNotBlank)?.lowercase()?.replace(Regex("[^a-z0-9-]+"), "-")
             ?: "remote-nmap-executor",

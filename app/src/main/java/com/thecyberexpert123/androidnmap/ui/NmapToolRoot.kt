@@ -575,7 +575,7 @@ private fun StructuredNmapOptionsCard(
                 onCheckedChange = onSkipHostDiscoveryChanged,
             )
             SettingSwitchRow(
-                title = "Service detection (-sV)",
+                title = "Service detection (-sV, limited locally)",
                 checked = state.enableServiceDetection,
                 onCheckedChange = onServiceDetectionChanged,
             )
@@ -1358,7 +1358,7 @@ private fun SelectorSection(
 
 private fun formatExecutorNodeKind(kind: ExecutorNodeKind): String = when (kind) {
     ExecutorNodeKind.ANDROID_LOCAL -> "Android local executor"
-    ExecutorNodeKind.REMOTE_NMAP -> "Delegated remote Nmap executor"
+    ExecutorNodeKind.REMOTE_NMAP -> "Delegated Nmap executor"
     ExecutorNodeKind.LAN_AGENT -> "Delegated LAN agent"
     ExecutorNodeKind.UNKNOWN -> "Unknown executor"
 }
