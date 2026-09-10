@@ -101,6 +101,7 @@ This document records development observations, constraints, trade-offs, and lea
 - Change awareness matters: recurring scans become significantly more useful when the operator can immediately see whether the latest run materially differs from the previous one.
 - Lightweight output parsing is useful, but it must be described honestly as heuristic unless the implementation is driven by a guaranteed structured output format.
 - Dashboard insights become much more valuable when they are derived from saved run history and explicit parsed deltas instead of invented status labels.
+- When a tool already has a documented structured output format, it is usually better engineering to capture and parse that format than to keep expanding fragile text heuristics. Nmap XML fits that pattern well.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

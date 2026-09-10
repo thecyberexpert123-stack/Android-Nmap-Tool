@@ -133,6 +133,7 @@ This project chooses correctness over false claims:
   - output file writes
   - executor-side file input indirection
   - ncat command execution modes
+- for `nmap` requests, the executor can capture **normal output plus structured XML output** using executor-managed temporary files for programmatic parsing
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
 - optional target-scope restriction via `ALLOWED_TARGET_REGEXES`
 - bounded output capture via `MAX_OUTPUT_BYTES`
@@ -207,7 +208,10 @@ export NPING_BINARY="nping"
 The app now derives lightweight summaries from captured tool output to make repeated scans easier to inspect.
 
 ### Current parsing behavior
-- **Nmap**: extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, and completion duration from normal stdout when present.
+- **Nmap**:
+  - prefers structured XML output when the remote executor provides it,
+  - falls back to heuristic stdout parsing when XML is unavailable,
+  - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, and completion duration.
 - **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
 - **Ncat**: surfaces connection target and first output line when present.
 
@@ -219,7 +223,8 @@ The app now derives lightweight summaries from captured tool output to make repe
 - Non-Nmap tools currently keep generic delta reporting only.
 
 ### Important limitation
-These summaries and deltas are **heuristic parsers of captured output**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
+- XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
+- Non-Nmap tool summaries and fallback text parsing remain **heuristic**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy
 

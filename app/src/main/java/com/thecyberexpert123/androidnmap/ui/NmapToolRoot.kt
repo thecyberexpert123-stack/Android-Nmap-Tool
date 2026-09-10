@@ -199,8 +199,9 @@ private fun DashboardScreen(
 ) {
     val recentRuns = runs.take(20)
     val observedHosts = recentRuns
-        .flatMap { run -> run.parsedSummary.portFindings }
-        .mapNotNull { finding -> finding.host?.takeIf(String::isNotBlank) }
+        .flatMap { run -> run.parsedSummary.observedHosts }
+        .map(String::trim)
+        .filter(String::isNotEmpty)
         .toSet()
     val observedEndpoints = recentRuns
         .flatMap { run -> run.parsedSummary.portFindings }
@@ -674,6 +675,7 @@ private fun SettingsScreen(
                     Text(text = "max arguments per request: ${capabilities.maxArgumentsPerRequest}")
                     Text(text = "captured output limit: ${capabilities.outputCaptureLimitBytes} bytes")
                     Text(text = "target policy: ${capabilities.targetPolicySummary}")
+                    Text(text = "structured Nmap XML support: ${capabilities.supportsStructuredNmapXml}")
                     Text(text = capabilities.advisory)
                 }
             }

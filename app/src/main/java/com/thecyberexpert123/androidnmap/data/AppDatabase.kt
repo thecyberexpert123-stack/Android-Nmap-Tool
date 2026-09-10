@@ -8,6 +8,8 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Database(
@@ -16,13 +18,21 @@ import kotlinx.coroutines.flow.Flow
         AutomationScheduleEntity::class,
         ScanRunEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun scanProfileDao(): ScanProfileDao
     abstract fun automationScheduleDao(): AutomationScheduleDao
     abstract fun scanRunDao(): ScanRunDao
+
+    companion object {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE scan_runs ADD COLUMN nmapXmlOutput TEXT")
+            }
+        }
+    }
 }
 
 @Entity(tableName = "scan_profiles")
@@ -66,6 +76,7 @@ data class ScanRunEntity(
     val message: String,
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
+    val nmapXmlOutput: String?,
 )
 
 @Dao

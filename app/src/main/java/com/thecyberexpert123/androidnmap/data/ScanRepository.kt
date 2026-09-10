@@ -137,6 +137,7 @@ class DefaultScanRepository(
                         exitCode = entity.exitCode,
                         stdout = entity.stdout,
                         stderr = entity.stderr,
+                        nmapXmlOutput = entity.nmapXmlOutput,
                     ),
                 )
             }
@@ -338,6 +339,7 @@ class DefaultScanRepository(
                 message = response.message.take(4_000),
                 startedAtEpochMillis = response.startedAtEpochMillis,
                 finishedAtEpochMillis = response.finishedAtEpochMillis,
+                nmapXmlOutput = response.nmapXmlOutput?.take(MAX_TEXT_SNAPSHOT),
             ),
         )
         return response
@@ -408,7 +410,11 @@ class DefaultScanRepository(
         if (previous.entity.commandPreview != current.entity.commandPreview) {
             deltas += "command arguments changed"
         }
-        if (fingerprint(previous.entity.stdout) != fingerprint(current.entity.stdout) || fingerprint(previous.entity.stderr) != fingerprint(current.entity.stderr)) {
+        if (
+            fingerprint(previous.entity.stdout) != fingerprint(current.entity.stdout) ||
+            fingerprint(previous.entity.stderr) != fingerprint(current.entity.stderr) ||
+            fingerprint(previous.entity.nmapXmlOutput.orEmpty()) != fingerprint(current.entity.nmapXmlOutput.orEmpty())
+        ) {
             deltas += "captured output changed"
         }
 

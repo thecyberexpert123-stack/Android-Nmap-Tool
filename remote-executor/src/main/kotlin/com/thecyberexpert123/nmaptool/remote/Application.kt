@@ -193,6 +193,7 @@ class RemoteExecutionEngine(
             append("File-writing and process-spawning flags are blocked by policy. ")
             append(config.targetPolicySummary())
         },
+        supportsStructuredNmapXml = true,
     )
 
     suspend fun execute(request: ToolInvocationRequest): ToolInvocationResponse = withContext(Dispatchers.IO) {
@@ -211,52 +212,83 @@ class RemoteExecutionEngine(
             )
         }
 
-        val command = buildList {
-            add(binary)
-            addAll(request.arguments)
-            addAll(request.targets)
-        }
-        val process = ProcessBuilder(command)
-            .redirectErrorStream(false)
-            .start()
-
-        val result = coroutineScope {
-            val stdoutDeferred = async { readCappedText(process.inputStream, config.maxOutputBytes) }
-            val stderrDeferred = async { readCappedText(process.errorStream, config.maxOutputBytes) }
-            val finishedInTime = process.waitFor(config.executionTimeoutSeconds, TimeUnit.SECONDS)
-            if (!finishedInTime) {
-                process.destroyForcibly()
-            }
-            val stdoutCapture = stdoutDeferred.await()
-            val stderrCapture = stderrDeferred.await()
-            ExecutionResult(
-                exitCode = if (finishedInTime) process.exitValue() else null,
-                stdout = stdoutCapture.asDisplayText(streamName = "stdout"),
-                stderr = buildString {
-                    append(stderrCapture.asDisplayText(streamName = "stderr"))
-                    if (!finishedInTime) {
-                        if (isNotEmpty()) append('\n')
-                        append("Execution timed out after ${config.executionTimeoutSeconds} seconds.")
-                    }
-                },
+        val structuredFiles = if (request.tool == ToolType.NMAP) {
+            StructuredOutputFiles(
+                normalOutputFile = Files.createTempFile("android-nmap-tool-", ".nmap"),
+                xmlOutputFile = Files.createTempFile("android-nmap-tool-", ".xml"),
             )
+        } else {
+            null
         }
 
-        ToolInvocationResponse(
-            route = ExecutionRoute.REMOTE,
-            status = if (result.exitCode == 0) RunStatus.SUCCEEDED else RunStatus.FAILED,
-            commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
-            exitCode = result.exitCode,
-            stdout = result.stdout,
-            stderr = result.stderr,
-            startedAtEpochMillis = startedAt,
-            finishedAtEpochMillis = System.currentTimeMillis(),
-            message = when {
-                result.exitCode == null -> "Execution exceeded the configured timeout."
-                result.exitCode == 0 -> "Remote execution completed successfully."
-                else -> "Remote execution finished with a non-zero exit code."
-            },
-        )
+        try {
+            val command = buildList {
+                add(binary)
+                addAll(request.arguments)
+                structuredFiles?.let { files ->
+                    add("-oN")
+                    add(files.normalOutputFile.toString())
+                    add("-oX")
+                    add(files.xmlOutputFile.toString())
+                }
+                addAll(request.targets)
+            }
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(false)
+                .start()
+
+            val result = coroutineScope {
+                val stdoutDeferred = async { readCappedText(process.inputStream, config.maxOutputBytes) }
+                val stderrDeferred = async { readCappedText(process.errorStream, config.maxOutputBytes) }
+                val finishedInTime = process.waitFor(config.executionTimeoutSeconds, TimeUnit.SECONDS)
+                if (!finishedInTime) {
+                    process.destroyForcibly()
+                }
+                val stdoutCapture = stdoutDeferred.await()
+                val stderrCapture = stderrDeferred.await()
+                val normalOutputCapture = structuredFiles?.normalOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
+                val xmlOutputCapture = structuredFiles?.xmlOutputFile?.let { readCappedFile(it, config.maxOutputBytes) }
+                ExecutionResult(
+                    exitCode = if (finishedInTime) process.exitValue() else null,
+                    stdout = normalOutputCapture?.asDisplayText(streamName = "nmap-normal-output")
+                        ?: stdoutCapture.asDisplayText(streamName = "stdout"),
+                    stderr = buildString {
+                        append(stderrCapture.asDisplayText(streamName = "stderr"))
+                        if (xmlOutputCapture?.truncated == true) {
+                            if (isNotEmpty()) append('\n')
+                            append("Structured Nmap XML output exceeded the capture limit and was omitted from the API response.")
+                        }
+                        if (!finishedInTime) {
+                            if (isNotEmpty()) append('\n')
+                            append("Execution timed out after ${config.executionTimeoutSeconds} seconds.")
+                        }
+                    },
+                    nmapXmlOutput = xmlOutputCapture
+                        ?.takeUnless { it.truncated }
+                        ?.content
+                        ?.takeIf(String::isNotBlank),
+                )
+            }
+
+            ToolInvocationResponse(
+                route = ExecutionRoute.REMOTE,
+                status = if (result.exitCode == 0) RunStatus.SUCCEEDED else RunStatus.FAILED,
+                commandPreview = CommandPreview.render(request.tool, request.arguments, request.targets),
+                exitCode = result.exitCode,
+                stdout = result.stdout,
+                stderr = result.stderr,
+                startedAtEpochMillis = startedAt,
+                finishedAtEpochMillis = System.currentTimeMillis(),
+                message = when {
+                    result.exitCode == null -> "Execution exceeded the configured timeout."
+                    result.exitCode == 0 -> "Remote execution completed successfully."
+                    else -> "Remote execution finished with a non-zero exit code."
+                },
+                nmapXmlOutput = result.nmapXmlOutput,
+            )
+        } finally {
+            structuredFiles?.deleteQuietly()
+        }
     }
 
     private fun isExecutableAvailable(binary: String): Boolean {
@@ -310,11 +342,29 @@ class RemoteExecutionEngine(
         }
     }
 
+    private fun readCappedFile(path: Path, maxBytes: Int): CapturedText? {
+        if (!Files.exists(path)) {
+            return null
+        }
+        return readCappedText(Files.newInputStream(path), maxBytes)
+    }
+
     private data class ExecutionResult(
         val exitCode: Int?,
         val stdout: String,
         val stderr: String,
+        val nmapXmlOutput: String? = null,
     )
+
+    private data class StructuredOutputFiles(
+        val normalOutputFile: Path,
+        val xmlOutputFile: Path,
+    ) {
+        fun deleteQuietly() {
+            runCatching { Files.deleteIfExists(normalOutputFile) }
+            runCatching { Files.deleteIfExists(xmlOutputFile) }
+        }
+    }
 
     private data class CapturedText(
         val content: String,

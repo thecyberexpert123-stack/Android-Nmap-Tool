@@ -6,7 +6,7 @@ import kotlin.test.assertTrue
 
 class ResultParsingTest {
     @Test
-    fun `nmap parser extracts hosts and open ports from standard output`() {
+    fun `nmap text parser extracts hosts and open ports from standard output`() {
         val stdout = """
             Starting Nmap 7.95 ( https://nmap.org ) at 2026-09-10 15:10 UTC
             Nmap scan report for scanme.nmap.org (45.33.32.156)
@@ -30,7 +30,54 @@ class ResultParsingTest {
         assertEquals("1 of 1 hosts up, 3 open/open-filtered ports parsed", summary.overview)
         assertEquals(3, summary.portFindings.size)
         assertEquals(22, summary.portFindings.first().port)
+        assertTrue(summary.observedHosts.any { it.contains("scanme.nmap.org") })
         assertTrue(summary.highlights.any { it.contains("Scan duration") })
+    }
+
+    @Test
+    fun `nmap xml parser extracts structured hosts and ports when available`() {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE nmaprun>
+            <nmaprun scanner="nmap" args="nmap -oX - scanme.nmap.org" start="1725971400" version="7.95" xmloutputversion="1.05">
+              <host starttime="1725971401" endtime="1725971410">
+                <status state="up" reason="syn-ack" reason_ttl="0" />
+                <address addr="45.33.32.156" addrtype="ipv4" />
+                <hostnames>
+                  <hostname name="scanme.nmap.org" type="user" />
+                </hostnames>
+                <ports>
+                  <extraports state="closed" count="997" />
+                  <port protocol="tcp" portid="22">
+                    <state state="open" reason="syn-ack" reason_ttl="0" />
+                    <service name="ssh" product="OpenSSH" version="8.2" extrainfo="Ubuntu" />
+                  </port>
+                  <port protocol="tcp" portid="80">
+                    <state state="open" reason="syn-ack" reason_ttl="0" />
+                    <service name="http" product="Apache httpd" version="2.4.57" />
+                  </port>
+                </ports>
+              </host>
+              <runstats>
+                <finished time="1725971411" elapsed="11.23" summary="Nmap done" exit="success" />
+                <hosts up="1" down="0" total="1" />
+              </runstats>
+            </nmaprun>
+        """.trimIndent()
+
+        val summary = ToolResultParser.parse(
+            tool = ToolType.NMAP,
+            status = RunStatus.SUCCEEDED,
+            exitCode = 0,
+            stdout = "interactive output suppressed",
+            stderr = "",
+            nmapXmlOutput = xml,
+        )
+
+        assertEquals("1 of 1 hosts up, 2 open/open-filtered ports parsed", summary.overview)
+        assertEquals(listOf("scanme.nmap.org"), summary.observedHosts)
+        assertEquals(2, summary.portFindings.size)
+        assertTrue(summary.highlights.any { it.contains("structured Nmap XML") })
     }
 
     @Test

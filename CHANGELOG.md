@@ -65,6 +65,9 @@ The format is intentionally simple and incremental so each agent session can app
   - Ncat connection/session highlight extraction
 - Added **host/port change detection** for repeated Nmap runs based on parsed open endpoints.
 - Added **dashboard insight cards** for observed hosts, open endpoints, and recent port-change alerts derived from recent run history.
+- Added **structured Nmap XML capture support** to the remote executor using executor-managed temporary output files.
+- Added **XML-first Nmap result parsing** in the shared contract layer, with secure XML parser configuration and stdout fallback when XML is unavailable.
+- Added Room schema support for persisting remote Nmap XML output across app restarts.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

@@ -1,5 +1,12 @@
 package com.thecyberexpert123.nmaptool.contract
 
+import org.w3c.dom.Element
+import org.w3c.dom.NodeList
+import org.xml.sax.InputSource
+import java.io.StringReader
+import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilderFactory
+
 private val nmapHostRegex = Regex("^Nmap scan report for (.+)$")
 private val nmapHostUpRegex = Regex("^Host is up(?: \\(([^)]+) latency\\))?\\.$")
 private val nmapPortRegex =
@@ -14,6 +21,7 @@ data class ToolResultSummary(
     val overview: String,
     val highlights: List<String> = emptyList(),
     val portFindings: List<PortFinding> = emptyList(),
+    val observedHosts: List<String> = emptyList(),
 )
 
 data class PortFinding(
@@ -35,13 +43,33 @@ object ToolResultParser {
         exitCode: Int?,
         stdout: String,
         stderr: String,
+        nmapXmlOutput: String? = null,
     ): ToolResultSummary = when (tool) {
-        ToolType.NMAP -> parseNmap(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
+        ToolType.NMAP -> parseNmap(
+            status = status,
+            exitCode = exitCode,
+            stdout = stdout,
+            stderr = stderr,
+            nmapXmlOutput = nmapXmlOutput,
+        )
         ToolType.NPING -> parseNping(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
         ToolType.NCAT -> parseNcat(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
     }
 
     private fun parseNmap(
+        status: RunStatus,
+        exitCode: Int?,
+        stdout: String,
+        stderr: String,
+        nmapXmlOutput: String?,
+    ): ToolResultSummary {
+        val xmlSummary = nmapXmlOutput
+            ?.takeIf { it.isNotBlank() }
+            ?.let { xml -> runCatching { parseNmapXml(status, exitCode, xml, stderr) }.getOrNull() }
+        return xmlSummary ?: parseNmapText(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
+    }
+
+    private fun parseNmapText(
         status: RunStatus,
         exitCode: Int?,
         stdout: String,
@@ -55,11 +83,13 @@ object ToolResultParser {
         var duration: String? = null
         val highlights = linkedSetOf<String>()
         val findings = mutableListOf<PortFinding>()
+        val observedHosts = linkedSetOf<String>()
 
         lines.forEach { line ->
             when {
                 nmapHostRegex.matches(line) -> {
                     currentHost = nmapHostRegex.matchEntire(line)?.groupValues?.get(1)?.trim()
+                    currentHost?.takeIf(String::isNotBlank)?.let(observedHosts::add)
                     reportedHosts += 1
                 }
 
@@ -127,6 +157,103 @@ object ToolResultParser {
             overview = overview,
             highlights = highlights.take(4),
             portFindings = findings.take(24),
+            observedHosts = observedHosts.take(24),
+        )
+    }
+
+    private fun parseNmapXml(
+        status: RunStatus,
+        exitCode: Int?,
+        xmlOutput: String,
+        stderr: String,
+    ): ToolResultSummary {
+        val documentBuilderFactory = createSecureDocumentBuilderFactory()
+        val documentBuilder = documentBuilderFactory.newDocumentBuilder()
+        val document = documentBuilder.parse(InputSource(StringReader(xmlOutput)))
+        val hostNodes = document.getElementsByTagName("host")
+        val findings = mutableListOf<PortFinding>()
+        val observedHosts = linkedSetOf<String>()
+        val highlights = linkedSetOf<String>()
+        var upHosts = 0
+
+        hostNodes.asElements().forEach { hostElement ->
+            val hostStatus = hostElement.firstElementByTagName("status")?.getAttribute("state").orEmpty()
+            val hostLabel = hostElement.resolvePreferredHostLabel()
+            if (hostStatus == "up") {
+                upHosts += 1
+            }
+            hostLabel?.takeIf(String::isNotBlank)?.let(observedHosts::add)
+
+            hostElement.firstElementByTagName("extraports")?.let { extraports ->
+                val count = extraports.getAttribute("count")
+                val stateName = extraports.getAttribute("state")
+                if (count.isNotBlank() && stateName.isNotBlank()) {
+                    highlights += "Not shown: $count $stateName ports"
+                }
+            }
+
+            hostElement.getElementsByTagName("port").asElements().forEach { portElement ->
+                val stateElement = portElement.firstElementByTagName("state") ?: return@forEach
+                val stateValue = stateElement.getAttribute("state")
+                if (!stateValue.startsWith("open")) {
+                    return@forEach
+                }
+                val serviceElement = portElement.firstElementByTagName("service")
+                findings += PortFinding(
+                    host = hostLabel,
+                    port = portElement.getAttribute("portid").toIntOrNull() ?: return@forEach,
+                    protocol = portElement.getAttribute("protocol"),
+                    state = stateValue,
+                    service = serviceElement?.getAttribute("name").orEmpty().ifBlank { "unknown" },
+                    details = buildString {
+                        serviceElement?.getAttribute("product")?.takeIf(String::isNotBlank)?.let(::append)
+                        serviceElement?.getAttribute("version")?.takeIf(String::isNotBlank)?.let { version ->
+                            if (isNotEmpty()) append(' ')
+                            append(version)
+                        }
+                        serviceElement?.getAttribute("extrainfo")?.takeIf(String::isNotBlank)?.let { extraInfo ->
+                            if (isNotEmpty()) append(' ')
+                            append(extraInfo)
+                        }
+                    }.trim(),
+                )
+            }
+        }
+
+        val runStatsHosts = document.getElementsByTagName("hosts").asElements().firstOrNull()
+        val scannedHosts = runStatsHosts?.getAttribute("total")?.toIntOrNull()
+        val reportedUpHosts = runStatsHosts?.getAttribute("up")?.toIntOrNull() ?: upHosts
+        val elapsedSeconds = document.getElementsByTagName("finished").asElements().firstOrNull()
+            ?.getAttribute("elapsed")
+            ?.takeIf(String::isNotBlank)
+        elapsedSeconds?.let { highlights += "Scan duration: ${it}s" }
+        highlights += "Parsed from structured Nmap XML output"
+        if (stderr.isNotBlank() && status != RunStatus.SUCCEEDED) {
+            highlights += "stderr captured during failed execution"
+        }
+
+        val hostSummary = when {
+            scannedHosts != null -> "$reportedUpHosts of $scannedHosts hosts up"
+            reportedUpHosts > 0 -> "$reportedUpHosts hosts up"
+            observedHosts.isNotEmpty() -> "${observedHosts.size} hosts reported"
+            else -> "No host summary parsed"
+        }
+        val portSummary = if (findings.isEmpty()) {
+            "no open ports parsed"
+        } else {
+            "${findings.size} open/open-filtered ports parsed"
+        }
+        val overview = when (status) {
+            RunStatus.SUCCEEDED -> "$hostSummary, $portSummary"
+            RunStatus.BLOCKED -> "Nmap run was blocked before execution."
+            RunStatus.FAILED -> "Nmap failed${exitCode?.let { " with exit code $it" } ?: ""}; $hostSummary, $portSummary"
+        }
+
+        return ToolResultSummary(
+            overview = overview,
+            highlights = highlights.take(5),
+            portFindings = findings.take(48),
+            observedHosts = observedHosts.take(48),
         )
     }
 
@@ -213,5 +340,50 @@ object ToolResultParser {
             overview = overview,
             highlights = highlights.distinct().take(4),
         )
+    }
+
+    private fun createSecureDocumentBuilderFactory(): DocumentBuilderFactory =
+        DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = false
+            isXIncludeAware = false
+            setExpandEntityReferences(false)
+            runCatching { setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true) }
+            runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+            runCatching { setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "") }
+            runCatching { setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "") }
+        }
+
+    private fun NodeList.asElements(): List<Element> =
+        buildList {
+            for (index in 0 until length) {
+                val node = item(index)
+                if (node is Element) {
+                    add(node)
+                }
+            }
+        }
+
+    private fun Element.firstElementByTagName(name: String): Element? =
+        getElementsByTagName(name).asElements().firstOrNull()
+
+    private fun Element.resolvePreferredHostLabel(): String? {
+        val hostname = getElementsByTagName("hostname").asElements().firstOrNull()
+            ?.getAttribute("name")
+            ?.trim()
+            .orEmpty()
+        if (hostname.isNotBlank()) {
+            return hostname
+        }
+
+        val addresses = getElementsByTagName("address").asElements()
+        val preferredAddress = addresses.firstOrNull { address ->
+            address.getAttribute("addrtype") == "ipv4"
+        } ?: addresses.firstOrNull { address ->
+            address.getAttribute("addrtype") == "ipv6"
+        } ?: addresses.firstOrNull()
+
+        return preferredAddress?.getAttribute("addr")?.trim()?.takeIf(String::isNotBlank)
     }
 }

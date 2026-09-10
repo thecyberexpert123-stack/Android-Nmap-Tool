@@ -62,6 +62,7 @@ data class ToolInvocationResponse(
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
     val message: String = "",
+    val nmapXmlOutput: String? = null,
 )
 
 @Serializable
@@ -76,6 +77,7 @@ data class RemoteCapabilitiesResponse(
     val outputCaptureLimitBytes: Int,
     val targetPolicySummary: String,
     val advisory: String,
+    val supportsStructuredNmapXml: Boolean = false,
 )
 
 @Serializable
