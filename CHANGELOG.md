@@ -110,6 +110,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Updated builder guidance so incompatible delegated topology/policy combinations no longer present as generally remote-ready when only a mismatched executor is configured.
 - Updated runtime delegated dispatch selection so target-topology-aware AUTO/REMOTE routing can choose the configured LAN agent for private-style targets without pretending Android itself gained raw-packet parity.
 - Added shared unit-test coverage for topology classification, delegated LAN-agent selection, and topology-aware capability-profile mapping.
+- Expanded structured Nmap XML parsing to capture per-host detail blocks, OS-match evidence, uptime/distance context, NSE script outputs, and traceroute summaries instead of only open-port rows.
+- Updated Android history/report rendering to surface parsed host-detail blocks and script-result summaries alongside endpoint findings.
+- Added secure XML-parse fallback warnings so malformed or non-parseable structured XML does not fail silently before heuristic text parsing.
+- Added shared test coverage for richer structured Nmap XML parsing, secure XML fallback behavior, and report rendering of host/script summaries.
 - Added shared test coverage for phase-C local `-O` planning/guidance and heuristic parsing of Android-local fingerprint-inference lines.
 
 ### Verified Environment Facts

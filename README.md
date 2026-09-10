@@ -152,13 +152,15 @@ This project chooses correctness over false claims:
   - scheduled-profile and recent-failure visibility
 - Shared **result parsing** for richer summaries:
   - Nmap host/up/open-port extraction from standard output
+  - structured Nmap XML parsing for per-host detail blocks, OS matches, uptime/distance hints, NSE script outputs, and traceroute summaries
   - Nping packet and RTT summary extraction
   - Ncat connection/output highlight extraction
+- Run history and exported reports now surface parsed host-detail blocks and script-result summaries when structured Nmap XML is available.
 - Parsed **host/port change detection** for repeated Nmap runs:
   - newly open endpoints since the previous run
   - previously open endpoints no longer present
 - Profile and automation views now surface saved schedule cadence and the most recent run outcome for faster operator triage.
-- Run history now surfaces parse provenance, execution duration, observed-host counts, explicit capture-truncation warnings, and remote request/executor identifiers when available.
+- Run history now surfaces parse provenance, execution duration, observed-host counts, parsed host-detail/script-result summaries, explicit capture-truncation warnings, and remote request/executor identifiers when available.
 - History now includes built-in **report export generation** with Markdown and CSV outputs derived from saved run history.
 - History can now export reports to a user-selected document destination and prepare shareable report files through Android's document/share flows.
 - Builder guidance now warns when the current profile is likely to depend on remote execution, stale capability data, unavailable tool binaries, or privilege-sensitive scan modes.
@@ -289,9 +291,10 @@ The app now derives lightweight summaries from captured tool output to make repe
 ### Current parsing behavior
 - **Nmap**:
   - prefers structured XML output when the delegated executor provides it,
-  - falls back to heuristic stdout parsing when XML is unavailable,
+  - falls back to heuristic stdout parsing when XML is unavailable or cannot be parsed securely,
   - also parses the Android-local TCP connect report format, including curated local service-detail lines and local fingerprint-inference lines, into the same saved summary model,
-  - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, service/detail text, local device/OS inference highlights, and completion duration.
+  - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, service/detail text, local device/OS inference highlights, and completion duration,
+  - when structured XML is available, additionally extracts per-host detail blocks such as addresses, alternative hostnames, OS matches, device/OS-class hints, uptime, network distance, traceroute summaries, and host/port/pre/post NSE script outputs.
 - **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
 - **Ncat**: surfaces connection target and first output line when present.
 - Each parsed run now records whether the summary came from structured Nmap XML, heuristic text parsing, or no parseable captured content.
@@ -327,8 +330,8 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 ## Roadmap
 
 ### Next milestones
-1. deeper delegated-executor routing verification and policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
-2. richer Nmap result modeling using structured output formats where feasible
+1. deeper parsed-result diffing and triage UX so repeated runs can compare host-detail/script evidence beyond open-port changes
+2. deeper delegated-executor routing verification and policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
 3. optional authenticated multi-user delegated-executor governance beyond the current single-token deployment model
 4. deeper delegated-executor observability such as richer backend metrics/retention controls around audit logs
 5. broader delegated execution management such as health/history for multiple registered executor nodes

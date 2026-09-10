@@ -24,6 +24,8 @@ data class ExecutionReportItem(
     val overview: String,
     val observedHosts: List<String> = emptyList(),
     val portFindings: List<PortFinding> = emptyList(),
+    val hostDetails: List<HostDetail> = emptyList(),
+    val scriptFindings: List<ScriptFinding> = emptyList(),
     val newOpenPorts: List<PortFinding> = emptyList(),
     val closedPorts: List<PortFinding> = emptyList(),
     val warnings: List<String> = emptyList(),
@@ -89,6 +91,8 @@ object ExecutionReportRenderer {
                 appendLine("- Overview: ${item.overview}")
                 appendLine("- Observed hosts: ${item.observedHosts.size}")
                 appendLine("- Parsed endpoints: ${item.portFindings.size}")
+                appendLine("- Host detail blocks: ${item.hostDetails.size}")
+                appendLine("- Script results: ${item.scriptFindings.size}")
                 appendLine("- Command: `${item.commandPreview}`")
                 if (item.message.isNotBlank()) {
                     appendLine("- Message: ${item.message}")
@@ -100,6 +104,18 @@ object ExecutionReportRenderer {
                 if (item.observedHosts.isNotEmpty()) {
                     appendLine("- Hosts:")
                     item.observedHosts.forEach { host -> appendLine("  - $host") }
+                }
+                if (item.hostDetails.isNotEmpty()) {
+                    appendLine("- Host details:")
+                    item.hostDetails.forEach { hostDetail ->
+                        appendLine("  - ${formatHostDetail(hostDetail)}")
+                    }
+                }
+                if (item.scriptFindings.isNotEmpty()) {
+                    appendLine("- Script results:")
+                    item.scriptFindings.forEach { scriptFinding ->
+                        appendLine("  - ${formatScriptFinding(scriptFinding)}")
+                    }
                 }
                 if (item.newOpenPorts.isNotEmpty()) {
                     appendLine("- New open ports since previous run:")
@@ -132,6 +148,8 @@ object ExecutionReportRenderer {
             "overview",
             "observed_hosts",
             "parsed_endpoint_count",
+            "host_details",
+            "script_findings",
             "new_open_ports",
             "closed_ports",
             "warnings",
@@ -154,6 +172,8 @@ object ExecutionReportRenderer {
                 item.overview,
                 item.observedHosts.joinToString(separator = "; "),
                 item.portFindings.size.toString(),
+                item.hostDetails.joinToString(separator = "; ", transform = ::formatHostDetail),
+                item.scriptFindings.joinToString(separator = "; ", transform = ::formatScriptFinding),
                 item.newOpenPorts.joinToString(separator = "; ", transform = ::formatFinding),
                 item.closedPorts.joinToString(separator = "; ", transform = ::formatFinding),
                 item.warnings.joinToString(separator = "; "),
@@ -206,6 +226,27 @@ object ExecutionReportRenderer {
             append(" — ")
             append(finding.details)
         }
+    }
+
+    private fun formatHostDetail(hostDetail: HostDetail): String = buildString {
+        append(hostDetail.host)
+        if (hostDetail.status.isNotBlank()) {
+            append(" [")
+            append(hostDetail.status)
+            append(']')
+        }
+        if (hostDetail.summaryLines.isNotEmpty()) {
+            append(" — ")
+            append(hostDetail.summaryLines.joinToString(separator = " | "))
+        }
+    }
+
+    private fun formatScriptFinding(scriptFinding: ScriptFinding): String = buildString {
+        append(scriptFinding.locationLabel)
+        append(" :: ")
+        append(scriptFinding.scriptId)
+        append(" — ")
+        append(scriptFinding.output)
     }
 
     private fun escapeCsv(value: String): String {

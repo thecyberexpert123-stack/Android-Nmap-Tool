@@ -68,6 +68,7 @@ import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.ExecutorCapabilityProfile
 import com.thecyberexpert123.nmaptool.contract.ExecutorNodeKind
 import com.thecyberexpert123.nmaptool.contract.ExecutorTransportKind
+import com.thecyberexpert123.nmaptool.contract.HostDetail
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ResultParseSource
@@ -75,6 +76,7 @@ import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.ReportExportFormat
 import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
+import com.thecyberexpert123.nmaptool.contract.ScriptFinding
 import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import java.text.DateFormat
@@ -1324,6 +1326,16 @@ private fun RunCard(run: ScanRunSummary) {
                     append(" hosts • ")
                     append(run.parsedSummary.portFindings.size)
                     append(" endpoints")
+                    if (run.parsedSummary.hostDetails.isNotEmpty()) {
+                        append(" • ")
+                        append(run.parsedSummary.hostDetails.size)
+                        append(" host details")
+                    }
+                    if (run.parsedSummary.scriptFindings.isNotEmpty()) {
+                        append(" • ")
+                        append(run.parsedSummary.scriptFindings.size)
+                        append(" script results")
+                    }
                 },
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -1379,6 +1391,18 @@ private fun RunCard(run: ScanRunSummary) {
                         )
                     }
                 }
+            }
+            if (run.parsedSummary.hostDetails.isNotEmpty()) {
+                PreviewCard(
+                    title = "Host details",
+                    body = run.parsedSummary.hostDetails.joinToString(separator = "\n\n", transform = ::formatHostDetail),
+                )
+            }
+            if (run.parsedSummary.scriptFindings.isNotEmpty()) {
+                PreviewCard(
+                    title = "Script results",
+                    body = run.parsedSummary.scriptFindings.joinToString(separator = "\n", transform = ::formatScriptFinding),
+                )
             }
             if (run.newOpenPorts.isNotEmpty()) {
                 PreviewCard(
@@ -1538,6 +1562,34 @@ private fun formatFinding(finding: PortFinding): String = buildString {
         append(" — ")
         append(finding.details)
     }
+}
+
+private fun formatHostDetail(hostDetail: HostDetail): String = buildString {
+    append(hostDetail.host)
+    if (hostDetail.status.isNotBlank()) {
+        append(" [")
+        append(hostDetail.status)
+        append(']')
+    }
+    if (hostDetail.summaryLines.isNotEmpty()) {
+        append('\n')
+        hostDetail.summaryLines.forEach { line ->
+            append("- ")
+            append(line)
+            append('\n')
+        }
+        if (endsWith("\n")) {
+            deleteCharAt(lastIndex)
+        }
+    }
+}
+
+private fun formatScriptFinding(scriptFinding: ScriptFinding): String = buildString {
+    append(scriptFinding.locationLabel)
+    append(" :: ")
+    append(scriptFinding.scriptId)
+    append(" — ")
+    append(scriptFinding.output)
 }
 
 private fun formatParseSource(source: ResultParseSource): String = when (source) {

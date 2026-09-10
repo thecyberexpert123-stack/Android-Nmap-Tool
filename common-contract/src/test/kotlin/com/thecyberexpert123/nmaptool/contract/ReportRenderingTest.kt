@@ -27,6 +27,23 @@ class ReportRenderingTest {
                     portFindings = listOf(
                         PortFinding(host = "192.168.1.1", port = 22, protocol = "tcp", state = "open", service = "ssh"),
                     ),
+                    hostDetails = listOf(
+                        HostDetail(
+                            host = "192.168.1.1",
+                            status = "up",
+                            summaryLines = listOf("OS match: Linux 6.x (accuracy 98)", "Network distance: 1 hops"),
+                        ),
+                    ),
+                    scriptFindings = listOf(
+                        ScriptFinding(
+                            scriptId = "http-title",
+                            output = "Gateway UI",
+                            host = "192.168.1.1",
+                            port = 443,
+                            protocol = "tcp",
+                            scope = "portscript",
+                        ),
+                    ),
                     newOpenPorts = listOf(
                         PortFinding(host = "192.168.1.1", port = 443, protocol = "tcp", state = "open", service = "https"),
                     ),
@@ -41,6 +58,10 @@ class ReportRenderingTest {
         assertTrue(report.contains("Structured XML parsed runs: 1"))
         assertTrue(report.contains("Executor: lab-executor"))
         assertTrue(report.contains("Request ID: req-123"))
+        assertTrue(report.contains("Host details:"))
+        assertTrue(report.contains("OS match: Linux 6.x"))
+        assertTrue(report.contains("Script results:"))
+        assertTrue(report.contains("http-title"))
         assertTrue(report.contains("New open ports since previous run"))
         assertTrue(report.contains("192.168.1.1 443/tcp open https"))
     }
@@ -71,6 +92,8 @@ class ReportRenderingTest {
         )
 
         assertTrue(report.lineSequence().first().contains("request_id"))
+        assertTrue(report.lineSequence().first().contains("host_details"))
+        assertTrue(report.lineSequence().first().contains("script_findings"))
         assertTrue(report.contains("\"Prod, API\""))
         assertTrue(report.contains("req-456"))
         assertTrue(report.contains("\"HTTP 401: \"\"unauthorized\"\"\""))

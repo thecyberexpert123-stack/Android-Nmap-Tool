@@ -245,3 +245,38 @@ This document records development observations, constraints, trade-offs, and lea
 - In a scheduled security tool, volatile UI state is not enough; routing-critical capability information needs a persistence strategy.
 - Configuration validity is broader than URL syntax. Capability caches must also be invalidated when authentication context changes.
 - The more the product promises capability-aware execution, the more important it becomes to make planner language conservative whenever topology/policy compatibility is unresolved.
+
+## 2026-09-10 — Richer structured Nmap XML result modeling
+
+### Why this batch was the right next step
+- After stabilizing delegated routing, the next highest-value improvement was to make saved results more operationally useful.
+- The app was already capturing structured Nmap XML, but it still reduced most runs to open-port rows and a small set of highlights. That left real upstream information like OS matches, NSE script output, uptime, and traceroute context underused.
+
+### What changed conceptually
+- I kept the core honesty rule: the app still is not claiming deeper scan capability than the executor actually provided.
+- Instead, I improved how the client **models and surfaces structured results already returned by Nmap**.
+- This is a safer and more production-aligned way to add value than inventing more heuristics, because the data comes from Nmap's actual XML schema rather than from fragile text scraping alone.
+
+### Implementation notes
+- I extended the shared result model with:
+  - per-host detail blocks
+  - script-result summaries
+- The structured XML parser now extracts:
+  - host addresses and alternative names
+  - OS-match and OS-class hints
+  - uptime and network-distance context
+  - host/port/pre/post script outputs
+  - traceroute summaries
+  - richer service-detail strings including some service metadata and CPE data when present
+- I also added an explicit warning path for malformed/unparseable XML so the fallback to heuristic text parsing is visible rather than silent.
+- Android history/reporting now renders those richer parsed structures so the new model is actually usable, not just stored in memory.
+
+### Trade-offs and constraints
+- I intentionally summarized complex XML subtrees into operator-friendly lines rather than mirroring the entire Nmap DTD in the app model. That keeps the UI/reporting practical without pretending to be a full Zenmap-class XML explorer.
+- Multiline script outputs are normalized into compact snippets for history/report screens, because raw NSE output can be very large and noisy on mobile.
+- As with prior batches, I still could not run Gradle/JVM verification here because JDK 17 is unavailable in this sandbox.
+
+### Lessons reinforced
+- When an upstream tool already provides a structured schema, product quality usually improves more by modeling that schema better than by layering on increasingly ambitious text heuristics.
+- Good mobile reporting often depends on summarization discipline: preserving high-value evidence without dumping every raw field into the first screen.
+- Secure XML parsing is only half the job; operators also need explicit visibility when the structured path failed and the product had to fall back.

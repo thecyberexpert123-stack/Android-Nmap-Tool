@@ -27,6 +27,8 @@ data class ToolResultSummary(
     val warnings: List<String> = emptyList(),
     val portFindings: List<PortFinding> = emptyList(),
     val observedHosts: List<String> = emptyList(),
+    val hostDetails: List<HostDetail> = emptyList(),
+    val scriptFindings: List<ScriptFinding> = emptyList(),
 )
 
 data class PortFinding(
@@ -39,6 +41,28 @@ data class PortFinding(
 ) {
     val endpointLabel: String
         get() = "$port/$protocol"
+}
+
+data class HostDetail(
+    val host: String,
+    val status: String = "",
+    val summaryLines: List<String> = emptyList(),
+)
+
+data class ScriptFinding(
+    val scriptId: String,
+    val output: String,
+    val host: String? = null,
+    val port: Int? = null,
+    val protocol: String? = null,
+    val scope: String = "host",
+) {
+    val locationLabel: String
+        get() = when {
+            port != null && !protocol.isNullOrBlank() -> listOfNotNull(host?.takeIf(String::isNotBlank), "$port/$protocol").joinToString(" ")
+            !host.isNullOrBlank() -> host.orEmpty()
+            else -> scope
+        }
 }
 
 object ToolResultParser {
@@ -63,6 +87,7 @@ object ToolResultParser {
             stderrTruncated = stderrTruncated,
             nmapXmlOutputTruncated = nmapXmlOutputTruncated,
         )
+
         ToolType.NPING -> parseNping(
             status = status,
             exitCode = exitCode,
@@ -71,6 +96,7 @@ object ToolResultParser {
             stdoutTruncated = stdoutTruncated,
             stderrTruncated = stderrTruncated,
         )
+
         ToolType.NCAT -> parseNcat(
             status = status,
             exitCode = exitCode,
@@ -91,21 +117,38 @@ object ToolResultParser {
         stderrTruncated: Boolean,
         nmapXmlOutputTruncated: Boolean,
     ): ToolResultSummary {
-        val xmlSummary = nmapXmlOutput
-            ?.takeIf { it.isNotBlank() }
-            ?.let { xml ->
-                runCatching {
-                    parseNmapXml(
-                        status = status,
-                        exitCode = exitCode,
-                        xmlOutput = xml,
-                        stderr = stderr,
-                        stdoutTruncated = stdoutTruncated,
-                        stderrTruncated = stderrTruncated,
-                    )
-                }.getOrNull()
+        val xmlCandidate = nmapXmlOutput?.takeIf { it.isNotBlank() }
+        if (xmlCandidate != null) {
+            val xmlResult = runCatching {
+                parseNmapXml(
+                    status = status,
+                    exitCode = exitCode,
+                    xmlOutput = xmlCandidate,
+                    stderr = stderr,
+                    stdoutTruncated = stdoutTruncated,
+                    stderrTruncated = stderrTruncated,
+                )
             }
-        return xmlSummary ?: parseNmapText(
+            xmlResult.getOrNull()?.let { return it }
+
+            val fallback = parseNmapText(
+                status = status,
+                exitCode = exitCode,
+                stdout = stdout,
+                stderr = stderr,
+                stdoutTruncated = stdoutTruncated,
+                stderrTruncated = stderrTruncated,
+                nmapXmlOutputTruncated = nmapXmlOutputTruncated,
+            )
+            return fallback.copy(
+                warnings = (
+                    listOf("Structured Nmap XML was present but could not be parsed securely, so parsing fell back to normal text output.") +
+                        fallback.warnings
+                    ).distinct().take(5),
+            )
+        }
+
+        return parseNmapText(
             status = status,
             exitCode = exitCode,
             stdout = stdout,
@@ -135,20 +178,33 @@ object ToolResultParser {
         val warnings = mutableListOf<String>()
         val findings = mutableListOf<PortFinding>()
         val observedHosts = linkedSetOf<String>()
+        val hostDetailsByLabel = linkedMapOf<String, MutableHostDetail>()
 
         lines.forEach { line ->
             when {
                 nmapHostRegex.matches(line) -> {
                     currentHost = nmapHostRegex.matchEntire(line)?.groupValues?.get(1)?.trim()
-                    currentHost?.takeIf(String::isNotBlank)?.let(observedHosts::add)
+                    currentHost?.takeIf(String::isNotBlank)?.let { hostLabel ->
+                        observedHosts += hostLabel
+                        hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }
+                    }
                     reportedHosts += 1
                 }
 
                 nmapHostUpRegex.matches(line) -> {
                     upHosts += 1
+                    currentHost?.let { hostLabel ->
+                        hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }.status = "up"
+                    }
                     nmapHostUpRegex.matchEntire(line)?.groupValues?.getOrNull(1)
                         ?.takeIf(String::isNotBlank)
-                        ?.let { latency -> highlights += "Latency observed: $latency" }
+                        ?.let { latency ->
+                            highlights += "Latency observed: $latency"
+                            currentHost?.let { hostLabel ->
+                                hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }
+                                    .summaryLines += "Latency: $latency"
+                            }
+                        }
                 }
 
                 nmapNotShownRegex.matches(line) -> {
@@ -176,18 +232,30 @@ object ToolResultParser {
                 nmapDeviceTypeRegex.matches(line) -> {
                     nmapDeviceTypeRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { deviceType ->
                         highlights += "Device type: $deviceType"
+                        currentHost?.let { hostLabel ->
+                            hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }
+                                .summaryLines += "Device type: $deviceType"
+                        }
                     }
                 }
 
                 nmapOsDetailsRegex.matches(line) -> {
                     nmapOsDetailsRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { osDetails ->
                         highlights += "OS details: $osDetails"
+                        currentHost?.let { hostLabel ->
+                            hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }
+                                .summaryLines += "OS details: $osDetails"
+                        }
                     }
                 }
 
                 nmapOsEvidenceRegex.matches(line) -> {
                     nmapOsEvidenceRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { evidence ->
                         highlights += "OS fingerprint evidence: $evidence"
+                        currentHost?.let { hostLabel ->
+                            hostDetailsByLabel.getOrPut(hostLabel) { MutableHostDetail(host = hostLabel) }
+                                .summaryLines += "OS fingerprint evidence: $evidence"
+                        }
                     }
                 }
 
@@ -232,9 +300,13 @@ object ToolResultParser {
             overview = overview,
             parseSource = ResultParseSource.HEURISTIC_TEXT,
             highlights = highlights.take(6),
-            warnings = warnings.take(4),
+            warnings = warnings.take(5),
             portFindings = findings.take(24),
             observedHosts = observedHosts.take(24),
+            hostDetails = hostDetailsByLabel.values
+                .map(MutableHostDetail::toImmutable)
+                .filter { it.summaryLines.isNotEmpty() }
+                .take(24),
         )
     }
 
@@ -254,51 +326,211 @@ object ToolResultParser {
         val observedHosts = linkedSetOf<String>()
         val highlights = linkedSetOf<String>()
         val warnings = mutableListOf<String>()
+        val hostDetails = mutableListOf<HostDetail>()
+        val scriptFindings = mutableListOf<ScriptFinding>()
         var upHosts = 0
 
         hostNodes.asElements().forEach { hostElement ->
-            val hostStatus = hostElement.firstElementByTagName("status")?.getAttribute("state").orEmpty()
+            val hostStatus = hostElement.firstChildElementByTagName("status")?.getAttribute("state").orEmpty()
             val hostLabel = hostElement.resolvePreferredHostLabel()
             if (hostStatus == "up") {
                 upHosts += 1
             }
             hostLabel?.takeIf(String::isNotBlank)?.let(observedHosts::add)
 
-            hostElement.firstElementByTagName("extraports")?.let { extraports ->
-                val count = extraports.getAttribute("count")
-                val stateName = extraports.getAttribute("state")
-                if (count.isNotBlank() && stateName.isNotBlank()) {
-                    highlights += "Not shown: $count $stateName ports"
+            val hostDetailLines = linkedSetOf<String>()
+            val hostnames = hostElement.firstChildElementByTagName("hostnames")
+                ?.childElementsByTagName("hostname")
+                ?.mapNotNull { hostname -> hostname.getAttribute("name").trim().takeIf(String::isNotBlank) }
+                .orEmpty()
+            val addresses = hostElement.childElementsByTagName("address")
+                .mapNotNull { address ->
+                    address.getAttribute("addr").trim().takeIf(String::isNotBlank)?.let { value ->
+                        buildString {
+                            append(value)
+                            address.getAttribute("addrtype").trim().takeIf(String::isNotBlank)?.let { type ->
+                                append(" (")
+                                append(type)
+                                address.getAttribute("vendor").trim().takeIf(String::isNotBlank)?.let { vendor ->
+                                    append(", ")
+                                    append(vendor)
+                                }
+                                append(')')
+                            }
+                        }
+                    }
+                }
+            if (addresses.isNotEmpty()) {
+                hostDetailLines += "Addresses: ${addresses.joinToString(separator = ", ")}"
+            }
+            if (hostnames.isNotEmpty()) {
+                val alternativeNames = hostnames.filterNot { it == hostLabel }
+                if (alternativeNames.isNotEmpty()) {
+                    hostDetailLines += "Additional names: ${alternativeNames.joinToString(separator = ", ")}"
                 }
             }
 
-            hostElement.getElementsByTagName("port").asElements().forEach { portElement ->
-                val stateElement = portElement.firstElementByTagName("state") ?: return@forEach
-                val stateValue = stateElement.getAttribute("state")
-                if (!stateValue.startsWith("open")) {
-                    return@forEach
+            val portsElement = hostElement.firstChildElementByTagName("ports")
+            portsElement?.firstChildElementByTagName("extraports")?.let { extraports ->
+                val count = extraports.getAttribute("count")
+                val stateName = extraports.getAttribute("state")
+                if (count.isNotBlank() && stateName.isNotBlank()) {
+                    val summary = "Not shown: $count $stateName ports"
+                    highlights += summary
+                    hostDetailLines += summary
                 }
-                val serviceElement = portElement.firstElementByTagName("service")
-                findings += PortFinding(
-                    host = hostLabel,
-                    port = portElement.getAttribute("portid").toIntOrNull() ?: return@forEach,
-                    protocol = portElement.getAttribute("protocol"),
-                    state = stateValue,
-                    service = serviceElement?.getAttribute("name").orEmpty().ifBlank { "unknown" },
-                    details = buildString {
-                        serviceElement?.getAttribute("product")?.takeIf(String::isNotBlank)?.let(::append)
-                        serviceElement?.getAttribute("version")?.takeIf(String::isNotBlank)?.let { version ->
-                            if (isNotEmpty()) append(' ')
-                            append(version)
+            }
+
+            hostElement.firstChildElementByTagName("os")?.let { osElement ->
+                val bestMatch = osElement.childElementsByTagName("osmatch").firstOrNull()
+                bestMatch?.getAttribute("name")?.trim()?.takeIf(String::isNotBlank)?.let { matchName ->
+                    val accuracy = bestMatch.getAttribute("accuracy").trim()
+                    val osMatchSummary = if (accuracy.isNotBlank()) {
+                        "OS match: $matchName (accuracy $accuracy)"
+                    } else {
+                        "OS match: $matchName"
+                    }
+                    highlights += osMatchSummary
+                    hostDetailLines += osMatchSummary
+                }
+                bestMatch?.childElementsByTagName("osclass")?.firstOrNull()?.let { osClass ->
+                    val osClassSummary = buildString {
+                        osClass.getAttribute("type").trim().takeIf(String::isNotBlank)?.let {
+                            append("Device type: ")
+                            append(it)
                         }
-                        serviceElement?.getAttribute("extrainfo")?.takeIf(String::isNotBlank)?.let { extraInfo ->
-                            if (isNotEmpty()) append(' ')
-                            append(extraInfo)
+                        osClass.getAttribute("vendor").trim().takeIf(String::isNotBlank)?.let { vendor ->
+                            if (isNotEmpty()) append("; ")
+                            append("Vendor: ")
+                            append(vendor)
                         }
-                    }.trim(),
+                        osClass.getAttribute("osfamily").trim().takeIf(String::isNotBlank)?.let { family ->
+                            if (isNotEmpty()) append("; ")
+                            append("OS family: ")
+                            append(family)
+                        }
+                        osClass.getAttribute("osgen").trim().takeIf(String::isNotBlank)?.let { generation ->
+                            if (isNotEmpty()) append("; ")
+                            append("OS generation: ")
+                            append(generation)
+                        }
+                    }.trim()
+                    if (osClassSummary.isNotBlank()) {
+                        hostDetailLines += osClassSummary
+                    }
+                }
+                osElement.childElementsByTagName("osfingerprint").firstOrNull()
+                    ?.getAttribute("fingerprint")
+                    ?.trim()
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { fingerprint ->
+                        hostDetailLines += "OS fingerprint: ${fingerprint.truncateWithEllipsis(180)}"
+                    }
+            }
+
+            hostElement.firstChildElementByTagName("uptime")?.let { uptime ->
+                val seconds = uptime.getAttribute("seconds").trim()
+                val lastBoot = uptime.getAttribute("lastboot").trim()
+                val uptimeSummary = buildString {
+                    if (seconds.isNotBlank()) {
+                        append("Uptime: ")
+                        append(seconds)
+                        append(" seconds")
+                    }
+                    if (lastBoot.isNotBlank()) {
+                        if (isNotEmpty()) append("; ")
+                        append("Last boot: ")
+                        append(lastBoot)
+                    }
+                }
+                if (uptimeSummary.isNotBlank()) {
+                    hostDetailLines += uptimeSummary
+                }
+            }
+
+            hostElement.firstChildElementByTagName("distance")?.getAttribute("value")?.trim()?.takeIf(String::isNotBlank)?.let { distance ->
+                hostDetailLines += "Network distance: $distance hops"
+            }
+
+            val traceHops = hostElement.firstChildElementByTagName("trace")
+                ?.childElementsByTagName("hop")
+                .orEmpty()
+                .mapNotNull { hop ->
+                    hop.getAttribute("ttl").trim().toIntOrNull()?.let { ttl ->
+                        TracerouteHop(
+                            ttl = ttl,
+                            ipAddress = hop.getAttribute("ipaddr").trim().takeIf(String::isNotBlank),
+                            host = hop.getAttribute("host").trim().takeIf(String::isNotBlank),
+                            rtt = hop.getAttribute("rtt").trim().takeIf(String::isNotBlank),
+                        )
+                    }
+                }
+            if (traceHops.isNotEmpty()) {
+                val lastHop = traceHops.maxByOrNull { it.ttl }
+                hostDetailLines += buildString {
+                    append("Traceroute: ")
+                    append(traceHops.size)
+                    append(" hops captured")
+                    lastHop?.let { hop ->
+                        append("; last hop ")
+                        append(formatTraceHop(hop))
+                    }
+                }
+            }
+
+            scriptFindings += extractScriptFindings(
+                scriptsContainer = hostElement.firstChildElementByTagName("hostscript"),
+                host = hostLabel,
+                scope = "hostscript",
+            )
+
+            portsElement
+                ?.childElementsByTagName("port")
+                .orEmpty()
+                .forEach { portElement ->
+                    val stateElement = portElement.firstChildElementByTagName("state") ?: return@forEach
+                    val stateValue = stateElement.getAttribute("state")
+                    if (!stateValue.startsWith("open")) {
+                        return@forEach
+                    }
+                    val serviceElement = portElement.firstChildElementByTagName("service")
+                    val portNumber = portElement.getAttribute("portid").toIntOrNull() ?: return@forEach
+                    val protocol = portElement.getAttribute("protocol")
+                    findings += PortFinding(
+                        host = hostLabel,
+                        port = portNumber,
+                        protocol = protocol,
+                        state = stateValue,
+                        service = serviceElement?.getAttribute("name").orEmpty().ifBlank { "unknown" },
+                        details = buildServiceDetails(serviceElement),
+                    )
+                    scriptFindings += extractScriptFindings(
+                        scriptsContainer = portElement,
+                        host = hostLabel,
+                        port = portNumber,
+                        protocol = protocol,
+                        scope = "portscript",
+                    )
+                }
+
+            val hostDetailLabel = hostLabel?.takeIf(String::isNotBlank)
+            if (hostDetailLabel != null && hostDetailLines.isNotEmpty()) {
+                hostDetails += HostDetail(
+                    host = hostDetailLabel,
+                    status = hostStatus,
+                    summaryLines = hostDetailLines.take(8),
                 )
             }
         }
+
+        scriptFindings += extractScriptFindings(
+            scriptsContainer = document.documentElement.firstChildElementByTagName("prescript"),
+            scope = "prescript",
+        )
+        scriptFindings += extractScriptFindings(
+            scriptsContainer = document.documentElement.firstChildElementByTagName("postscript"),
+            scope = "postscript",
+        )
 
         val runStatsHosts = document.getElementsByTagName("hosts").asElements().firstOrNull()
         val scannedHosts = runStatsHosts?.getAttribute("total")?.toIntOrNull()
@@ -308,6 +540,9 @@ object ToolResultParser {
             ?.takeIf(String::isNotBlank)
         elapsedSeconds?.let { highlights += "Scan duration: ${it}s" }
         highlights += "Parsed from structured Nmap XML output"
+        if (scriptFindings.isNotEmpty()) {
+            highlights += "Captured ${scriptFindings.size} script result${if (scriptFindings.size == 1) "" else "s"} from XML output"
+        }
         if (stderr.isNotBlank() && status != RunStatus.SUCCEEDED) {
             highlights += "stderr captured during failed execution"
         }
@@ -338,10 +573,12 @@ object ToolResultParser {
         return ToolResultSummary(
             overview = overview,
             parseSource = ResultParseSource.STRUCTURED_NMAP_XML,
-            highlights = highlights.take(5),
-            warnings = warnings.take(4),
+            highlights = highlights.take(6),
+            warnings = warnings.take(5),
             portFindings = findings.take(48),
             observedHosts = observedHosts.take(48),
+            hostDetails = hostDetails.take(24),
+            scriptFindings = scriptFindings.distinct().take(48),
         )
     }
 
@@ -450,6 +687,61 @@ object ToolResultParser {
         )
     }
 
+    private fun extractScriptFindings(
+        scriptsContainer: Element?,
+        host: String? = null,
+        port: Int? = null,
+        protocol: String? = null,
+        scope: String,
+    ): List<ScriptFinding> = scriptsContainer
+        ?.childElementsByTagName("script")
+        ?.mapNotNull { script ->
+            val scriptId = script.getAttribute("id").trim().takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val output = normalizeInlineScriptOutput(script.getAttribute("output"))
+            output.takeIf(String::isNotBlank)?.let {
+                ScriptFinding(
+                    scriptId = scriptId,
+                    output = it,
+                    host = host,
+                    port = port,
+                    protocol = protocol,
+                    scope = scope,
+                )
+            }
+        }
+        .orEmpty()
+
+    private fun buildServiceDetails(serviceElement: Element?): String {
+        if (serviceElement == null) {
+            return ""
+        }
+        val segments = mutableListOf<String>()
+        buildString {
+            serviceElement.getAttribute("product").trim().takeIf(String::isNotBlank)?.let(::append)
+            serviceElement.getAttribute("version").trim().takeIf(String::isNotBlank)?.let { version ->
+                if (isNotEmpty()) append(' ')
+                append(version)
+            }
+            serviceElement.getAttribute("extrainfo").trim().takeIf(String::isNotBlank)?.let { extraInfo ->
+                if (isNotEmpty()) append(' ')
+                append(extraInfo)
+            }
+        }.trim().takeIf(String::isNotBlank)?.let(segments::add)
+        serviceElement.getAttribute("tunnel").trim().takeIf(String::isNotBlank)?.let { segments += "tunnel: $it" }
+        serviceElement.getAttribute("hostname").trim().takeIf(String::isNotBlank)?.let { segments += "hostname: $it" }
+        serviceElement.getAttribute("ostype").trim().takeIf(String::isNotBlank)?.let { segments += "ostype: $it" }
+        serviceElement.getAttribute("devicetype").trim().takeIf(String::isNotBlank)?.let { segments += "device: $it" }
+        serviceElement.getAttribute("method").trim().takeIf(String::isNotBlank)?.let { segments += "method: $it" }
+        serviceElement.getAttribute("conf").trim().takeIf(String::isNotBlank)?.let { segments += "confidence: $it" }
+        val cpes = serviceElement.childElementsByTagName("cpe")
+            .mapNotNull { cpe -> cpe.textContent?.trim()?.takeIf(String::isNotBlank) }
+            .distinct()
+        if (cpes.isNotEmpty()) {
+            segments += "CPE: ${cpes.joinToString(separator = ", ")}".truncateWithEllipsis(200)
+        }
+        return segments.joinToString(separator = "; ")
+    }
+
     private fun buildCaptureWarnings(
         stdoutTruncated: Boolean,
         stderrTruncated: Boolean,
@@ -496,11 +788,16 @@ object ToolResultParser {
             }
         }
 
-    private fun Element.firstElementByTagName(name: String): Element? =
-        getElementsByTagName(name).asElements().firstOrNull()
+    private fun Element.childElementsByTagName(name: String): List<Element> =
+        childNodes.asElements().filter { it.tagName == name }
+
+    private fun Element.firstChildElementByTagName(name: String): Element? =
+        childElementsByTagName(name).firstOrNull()
 
     private fun Element.resolvePreferredHostLabel(): String? {
-        val hostname = getElementsByTagName("hostname").asElements().firstOrNull()
+        val hostname = firstChildElementByTagName("hostnames")
+            ?.childElementsByTagName("hostname")
+            ?.firstOrNull()
             ?.getAttribute("name")
             ?.trim()
             .orEmpty()
@@ -508,7 +805,7 @@ object ToolResultParser {
             return hostname
         }
 
-        val addresses = getElementsByTagName("address").asElements()
+        val addresses = childElementsByTagName("address")
         val preferredAddress = addresses.firstOrNull { address ->
             address.getAttribute("addrtype") == "ipv4"
         } ?: addresses.firstOrNull { address ->
@@ -517,4 +814,57 @@ object ToolResultParser {
 
         return preferredAddress?.getAttribute("addr")?.trim()?.takeIf(String::isNotBlank)
     }
+
+    private fun normalizeInlineScriptOutput(raw: String): String = raw
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .joinToString(separator = " | ")
+        .ifBlank { raw.trim() }
+        .truncateWithEllipsis(240)
+
+    private fun String.truncateWithEllipsis(maxLength: Int): String {
+        if (length <= maxLength) {
+            return this
+        }
+        return take(maxLength.coerceAtLeast(1)).trimEnd() + "…"
+    }
+
+    private fun formatTraceHop(hop: TracerouteHop): String = buildString {
+        append("TTL ")
+        append(hop.ttl)
+        hop.host?.takeIf(String::isNotBlank)?.let {
+            append(' ')
+            append(it)
+        }
+        hop.ipAddress?.takeIf(String::isNotBlank)?.let {
+            append(" (")
+            append(it)
+            append(')')
+        }
+        hop.rtt?.takeIf(String::isNotBlank)?.let {
+            append(" RTT ")
+            append(it)
+            append(" ms")
+        }
+    }
+
+    private data class MutableHostDetail(
+        val host: String,
+        var status: String = "",
+        val summaryLines: LinkedHashSet<String> = linkedSetOf(),
+    ) {
+        fun toImmutable(): HostDetail = HostDetail(
+            host = host,
+            status = status,
+            summaryLines = summaryLines.toList(),
+        )
+    }
+
+    private data class TracerouteHop(
+        val ttl: Int,
+        val ipAddress: String? = null,
+        val host: String? = null,
+        val rtt: String? = null,
+    )
 }

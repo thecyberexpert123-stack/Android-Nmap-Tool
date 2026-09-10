@@ -36,29 +36,55 @@ class ResultParsingTest {
     }
 
     @Test
-    fun `nmap xml parser extracts structured hosts and ports when available`() {
+    fun `nmap xml parser extracts structured hosts ports os details and script results when available`() {
         val xml = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE nmaprun>
             <nmaprun scanner="nmap" args="nmap -oX - scanme.nmap.org" start="1725971400" version="7.95" xmloutputversion="1.05">
+              <prescript>
+                <script id="broadcast-test" output="pre-scan check complete" />
+              </prescript>
               <host starttime="1725971401" endtime="1725971410">
                 <status state="up" reason="syn-ack" reason_ttl="0" />
                 <address addr="45.33.32.156" addrtype="ipv4" />
                 <hostnames>
                   <hostname name="scanme.nmap.org" type="user" />
+                  <hostname name="li86-221.members.linode.com" type="PTR" />
                 </hostnames>
                 <ports>
                   <extraports state="closed" count="997" />
                   <port protocol="tcp" portid="22">
                     <state state="open" reason="syn-ack" reason_ttl="0" />
-                    <service name="ssh" product="OpenSSH" version="8.2" extrainfo="Ubuntu" />
+                    <service name="ssh" product="OpenSSH" version="8.2" extrainfo="Ubuntu" ostype="Linux" devicetype="general purpose" />
+                    <script id="ssh-hostkey" output="rsa-key" />
                   </port>
                   <port protocol="tcp" portid="80">
                     <state state="open" reason="syn-ack" reason_ttl="0" />
-                    <service name="http" product="Apache httpd" version="2.4.57" />
+                    <service name="http" product="Apache httpd" version="2.4.57" tunnel="ssl" method="probed" conf="10">
+                      <cpe>cpe:/a:apache:http_server:2.4.57</cpe>
+                    </service>
+                    <script id="http-title" output="Go ahead and ScanMe!" />
                   </port>
                 </ports>
+                <os>
+                  <osmatch name="Linux 6.x" accuracy="98" line="12345">
+                    <osclass vendor="Linux" osfamily="Linux" osgen="6.X" type="general purpose" accuracy="98" />
+                  </osmatch>
+                  <osfingerprint fingerprint="SCAN(V=7.95%OT=22%CT=1%CU=31289%PV=Y)" />
+                </os>
+                <uptime seconds="23450" lastboot="Fri Sep 9 12:03:04 2011" />
+                <distance value="11" />
+                <hostscript>
+                  <script id="nbstat" output="NetBIOS name data" />
+                </hostscript>
+                <trace port="256" proto="tcp">
+                  <hop ttl="10" ipaddr="64.62.250.6" rtt="12.06" host="core1.example.net" />
+                  <hop ttl="11" ipaddr="45.33.32.156" rtt="16.55" host="scanme.nmap.org" />
+                </trace>
               </host>
+              <postscript>
+                <script id="broadcast-finish" output="post-scan cleanup complete" />
+              </postscript>
               <runstats>
                 <finished time="1725971411" elapsed="11.23" summary="Nmap done" exit="success" />
                 <hosts up="1" down="0" total="1" />
@@ -79,7 +105,19 @@ class ResultParsingTest {
         assertEquals(ResultParseSource.STRUCTURED_NMAP_XML, summary.parseSource)
         assertEquals(listOf("scanme.nmap.org"), summary.observedHosts)
         assertEquals(2, summary.portFindings.size)
+        assertTrue(summary.portFindings.any { it.details.contains("CPE:") })
+        assertTrue(summary.portFindings.any { it.details.contains("method: probed") })
+        assertEquals(1, summary.hostDetails.size)
+        assertEquals("scanme.nmap.org", summary.hostDetails.first().host)
+        assertEquals("up", summary.hostDetails.first().status)
+        assertTrue(summary.hostDetails.first().summaryLines.any { it.contains("OS match: Linux 6.x") })
+        assertTrue(summary.hostDetails.first().summaryLines.any { it.contains("Traceroute: 2 hops captured") })
+        assertEquals(4, summary.scriptFindings.size)
+        assertTrue(summary.scriptFindings.any { it.scope == "prescript" && it.scriptId == "broadcast-test" })
+        assertTrue(summary.scriptFindings.any { it.scope == "hostscript" && it.scriptId == "nbstat" })
+        assertTrue(summary.scriptFindings.any { it.port == 80 && it.scriptId == "http-title" })
         assertTrue(summary.highlights.any { it.contains("structured Nmap XML") })
+        assertTrue(summary.highlights.any { it.contains("script result") })
     }
 
     @Test
@@ -108,6 +146,9 @@ class ResultParsingTest {
         assertEquals(2, summary.portFindings.size)
         assertEquals("android-local sV: banner SSH-2.0-OpenSSH_8.4", summary.portFindings.first().details)
         assertTrue(summary.portFindings.any { it.service == "https" && it.details.contains("Server: nginx") })
+        assertEquals(1, summary.hostDetails.size)
+        assertTrue(summary.hostDetails.first().summaryLines.any { it.contains("Device type: server") })
+        assertTrue(summary.hostDetails.first().summaryLines.any { it.contains("OS details: android-local inference: likely Linux/Unix-family") })
         assertTrue(summary.highlights.any { it.contains("Device type: server") })
         assertTrue(summary.highlights.any { it.contains("OS details: android-local inference: likely Linux/Unix-family") })
     }
@@ -136,6 +177,29 @@ class ResultParsingTest {
 
         assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
         assertTrue(summary.warnings.any { it.contains("fell back to normal text output") })
+    }
+
+    @Test
+    fun `nmap parser warns when xml is present but cannot be parsed`() {
+        val stdout = """
+            Nmap scan report for 192.168.1.10
+            Host is up.
+            PORT   STATE SERVICE
+            443/tcp open  https
+            Nmap done: 1 IP addresses (1 hosts up) scanned in 2.00 seconds
+        """.trimIndent()
+
+        val summary = ToolResultParser.parse(
+            tool = ToolType.NMAP,
+            status = RunStatus.SUCCEEDED,
+            exitCode = 0,
+            stdout = stdout,
+            stderr = "",
+            nmapXmlOutput = "<nmaprun><host>",
+        )
+
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
+        assertTrue(summary.warnings.any { it.contains("could not be parsed securely") })
     }
 
     @Test
