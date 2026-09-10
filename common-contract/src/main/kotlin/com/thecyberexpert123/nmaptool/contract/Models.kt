@@ -166,13 +166,13 @@ enum class ScanPreset(
         displayName = "Banner Grab (Ncat)",
         tool = ToolType.NCAT,
         suggestedArguments = listOf("-v"),
-        description = "Interactive or banner-oriented TCP connection helper.",
+        description = "TCP connection helper with passive banner capture. For Android-local mode, use a host:port target.",
     ),
     HOST_LATENCY_WITH_NPING(
         displayName = "Latency Probe (Nping)",
         tool = ToolType.NPING,
-        suggestedArguments = listOf("--tcp"),
-        description = "Probe reachability and latency with nping.",
+        suggestedArguments = listOf("--tcp-connect"),
+        description = "Connect-based reachability and latency probe that stays compatible with Android-local mode.",
     ),
 }
 

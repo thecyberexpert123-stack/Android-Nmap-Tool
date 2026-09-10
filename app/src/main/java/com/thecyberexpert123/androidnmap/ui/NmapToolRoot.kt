@@ -101,6 +101,7 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
     val builderState by viewModel.builderState.collectAsStateWithLifecycle()
     val remoteSettings by viewModel.remoteSettings.collectAsStateWithLifecycle()
     val capabilityState by viewModel.capabilityState.collectAsStateWithLifecycle()
+    val localCapabilityState by viewModel.localCapabilityState.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(AppTab.DASHBOARD.ordinal) }
@@ -147,6 +148,7 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 schedules = schedules,
                 remoteSettings = remoteSettings,
                 capabilityState = capabilityState,
+                localCapabilityState = localCapabilityState,
                 onNewScan = { selectedTabIndex = AppTab.BUILDER.ordinal },
                 onEditProfile = {
                     viewModel.loadProfile(it)
@@ -202,10 +204,12 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
             AppTab.SETTINGS -> SettingsScreen(
                 settingsState = remoteSettings,
                 capabilityState = capabilityState,
+                localCapabilityState = localCapabilityState,
                 onBaseUrlChanged = viewModel::updateRemoteBaseUrl,
                 onTokenChanged = viewModel::updateRemoteToken,
                 onSave = viewModel::saveRemoteSettings,
                 onRefreshCapabilities = viewModel::refreshCapabilities,
+                onRefreshLocalCapabilities = viewModel::refreshLocalCapabilities,
                 paddingValues = innerPadding,
             )
         }
@@ -219,6 +223,7 @@ private fun DashboardScreen(
     schedules: List<AutomationScheduleSummary>,
     remoteSettings: RemoteSettingsUiState,
     capabilityState: CapabilityUiState,
+    localCapabilityState: LocalCapabilityUiState,
     onNewScan: () -> Unit,
     onEditProfile: (String) -> Unit,
     onRunProfile: (String) -> Unit,
@@ -292,9 +297,16 @@ private fun DashboardScreen(
                     Text(text = "Execution posture", style = MaterialTheme.typography.titleMedium)
                     Text(
                         text = capabilityState.capabilities?.advisory
-                            ?: "Remote execution is the primary path for non-root Android, while local execution remains capability-gated.",
+                            ?: "Remote execution is the primary path for full/raw Nmap functionality on non-root Android, while Android-local execution stays capability-gated and socket-limited.",
                     )
                     Text(text = if (remoteConfigured) "Remote executor base URL is configured." else "Remote executor base URL is not configured yet.")
+                    Text(
+                        text = if (localCapabilityState.capabilities.networkAvailable) {
+                            "Android-local engine sees an active network: ${localCapabilityState.capabilities.activeNetworkSummary.orEmpty()}"
+                        } else {
+                            "Android-local engine does not currently see an active network."
+                        },
+                    )
                     capabilityState.capabilities?.executorLabel?.takeIf(String::isNotBlank)?.let { label ->
                         Text(text = "Connected executor label: $label")
                     }
@@ -905,10 +917,12 @@ private fun AutomationScreen(
 private fun SettingsScreen(
     settingsState: RemoteSettingsUiState,
     capabilityState: CapabilityUiState,
+    localCapabilityState: LocalCapabilityUiState,
     onBaseUrlChanged: (String) -> Unit,
     onTokenChanged: (String) -> Unit,
     onSave: () -> Unit,
     onRefreshCapabilities: () -> Unit,
+    onRefreshLocalCapabilities: () -> Unit,
     paddingValues: PaddingValues,
 ) {
     Column(
@@ -919,10 +933,35 @@ private fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(text = "Remote executor settings", style = MaterialTheme.typography.headlineSmall)
+        Text(text = "Execution settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Remote mode provides the honest path to broader Nmap functionality on modern non-root Android. The bearer token is stored encrypted with Android Keystore. Saving settings also re-checks remote capabilities when a base URL is configured.",
+            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, while remote mode remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving remote settings also re-checks backend capabilities when a base URL is configured.",
         )
+        Card {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(text = "Android-local capability report", style = MaterialTheme.typography.titleMedium)
+                Text(text = "snapshot captured: ${formatTimestamp(localCapabilityState.lastCheckedAtEpochMillis)}")
+                Text(text = "local engine available: ${localCapabilityState.capabilities.available}")
+                Text(text = "active network available: ${localCapabilityState.capabilities.networkAvailable}")
+                Text(text = "active network: ${localCapabilityState.capabilities.activeNetworkSummary.orEmpty()}")
+                Text(text = "tcp connect scanning: ${localCapabilityState.capabilities.supportsTcpConnectScan}")
+                Text(text = "udp application probes: ${localCapabilityState.capabilities.supportsUdpDatagramProbes}")
+                Text(text = "curated service detection: ${localCapabilityState.capabilities.supportsServiceDetection}")
+                Text(text = "android fingerprinting: ${localCapabilityState.capabilities.supportsAndroidFingerprinting}")
+                Text(text = "raw packet access: ${localCapabilityState.capabilities.supportsRawPackets}")
+                Text(text = "nmap os detection parity: ${localCapabilityState.capabilities.supportsNmapOsDetection}")
+                Text(text = "nse/default scripts: ${localCapabilityState.capabilities.supportsNmapDefaultScripts}")
+                Text(text = "traceroute: ${localCapabilityState.capabilities.supportsTraceroute}")
+                Text(text = "max targets per local run: ${localCapabilityState.capabilities.maxTargetsPerRun}")
+                Text(text = "max ports per target: ${localCapabilityState.capabilities.maxPortsPerTarget}")
+                Text(text = "max total socket probes: ${localCapabilityState.capabilities.maxTotalProbes}")
+                Text(text = localCapabilityState.capabilities.advisory)
+                Button(onClick = onRefreshLocalCapabilities) {
+                    Text("Refresh local snapshot")
+                }
+            }
+        }
+        Text(text = "Remote executor settings", style = MaterialTheme.typography.titleLarge)
         OutlinedTextField(
             value = settingsState.baseUrl,
             onValueChange = onBaseUrlChanged,
@@ -939,7 +978,10 @@ private fun SettingsScreen(
             supportingText = { Text("Optional. Leave empty only on intentionally trusted private deployments.") },
             singleLine = true,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Button(onClick = onSave) {
                 Text("Save settings")
             }

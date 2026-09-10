@@ -10,6 +10,7 @@ import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.work.AutomationScheduler
+import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.ArgumentTokenizer
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
@@ -73,6 +74,11 @@ data class CapabilityUiState(
     val stale: Boolean = false,
 )
 
+data class LocalCapabilityUiState(
+    val capabilities: AndroidLocalCapabilities,
+    val lastCheckedAtEpochMillis: Long,
+)
+
 class NmapToolViewModel(
     private val repository: DefaultScanRepository,
     private val automationScheduler: AutomationScheduler,
@@ -98,6 +104,14 @@ class NmapToolViewModel(
 
     private val _capabilityState = MutableStateFlow(CapabilityUiState())
     val capabilityState: StateFlow<CapabilityUiState> = _capabilityState.asStateFlow()
+
+    private val _localCapabilityState = MutableStateFlow(
+        LocalCapabilityUiState(
+            capabilities = repository.readLocalCapabilities(),
+            lastCheckedAtEpochMillis = System.currentTimeMillis(),
+        ),
+    )
+    val localCapabilityState: StateFlow<LocalCapabilityUiState> = _localCapabilityState.asStateFlow()
 
     private val _builderState = MutableStateFlow(recalculate(ScanBuilderUiState()))
     val builderState: StateFlow<ScanBuilderUiState> = _builderState.asStateFlow()
@@ -341,6 +355,15 @@ class NmapToolViewModel(
         }
     }
 
+    fun refreshLocalCapabilities() {
+        _localCapabilityState.value = LocalCapabilityUiState(
+            capabilities = repository.readLocalCapabilities(),
+            lastCheckedAtEpochMillis = System.currentTimeMillis(),
+        )
+        refreshBuilderDerivedState()
+        _message.value = "Refreshed Android-local capability snapshot."
+    }
+
     private suspend fun refreshCapabilitiesForSettings(
         settings: RemoteEndpointSettings,
         publishMessageOnFailure: Boolean = false,
@@ -471,10 +494,10 @@ class NmapToolViewModel(
         }
 
         val effectiveArgumentTokens = runCatching { ArgumentTokenizer.tokenize(effectiveArguments) }.getOrDefault(emptyList())
+        val targets = TargetParser.parse(state.rawTargets)
         val commandPreview = if (effectiveArguments.isBlank()) {
             state.tool.binaryName + state.rawTargets.trim().let { suffix -> if (suffix.isBlank()) "" else " $suffix" }
         } else {
-            val targets = TargetParser.parse(state.rawTargets)
             runCatching {
                 CommandPreview.render(
                     tool = state.tool,
@@ -488,14 +511,16 @@ class NmapToolViewModel(
             )
         }
         val capabilitySnapshot = capabilityState.value
+        val localCapabilitySnapshot = localCapabilityState.value.capabilities
         val baseGuidance = ExecutionGuidanceAdvisor.analyze(
             tool = state.tool,
+            targets = targets,
             executionPreference = state.executionPreference,
             arguments = effectiveArgumentTokens,
             remoteConfigured = remoteSettings.value.baseUrl.isNotBlank(),
             remoteCapabilities = capabilitySnapshot.capabilities,
             remoteCapabilitiesStale = capabilitySnapshot.stale,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilitySnapshot,
             scheduleEnabled = state.scheduleEnabled,
         )
         val executionGuidance = if (issues.isNotEmpty()) {

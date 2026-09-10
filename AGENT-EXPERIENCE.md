@@ -110,6 +110,8 @@ This document records development observations, constraints, trade-offs, and lea
 - Pre-run execution guidance is worth centralizing in shared logic rather than scattering ad-hoc warnings through Compose, because route assumptions and privilege caveats are domain rules, not just UI copy.
 - Once report generation becomes operationally useful, clipboard-only export is not enough. Adding SAF/file-share paths keeps the app aligned with real Android operator workflows without pretending desktop-style unrestricted filesystem access exists.
 - Request IDs only become genuinely useful when they appear on both success and failure paths. Propagating them into API error responses and optional backend audit logs closes that observability gap.
+- Replacing a disabled local executor with a real stock-Android transport engine requires resisting the temptation to treat expert CLI text as magic. The safe path is to parse only a bounded, explicit subset and route everything else back toward the honest remote-Nmap path.
+- Pseudo-Nmap-compatible local output can still be worthwhile when it feeds a shared history/reporting pipeline, but only if the accompanying messages and guidance clearly state that the engine is connect-based and not a raw-packet parity layer.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

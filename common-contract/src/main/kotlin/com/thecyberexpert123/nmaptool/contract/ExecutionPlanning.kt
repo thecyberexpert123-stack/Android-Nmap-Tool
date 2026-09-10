@@ -42,25 +42,33 @@ data class ExecutionGuidance(
 object ExecutionGuidanceAdvisor {
     fun analyze(
         tool: ToolType,
+        targets: List<String>,
         executionPreference: ExecutionPreference,
         arguments: List<String>,
         remoteConfigured: Boolean,
         remoteCapabilities: RemoteCapabilitiesResponse?,
         remoteCapabilitiesStale: Boolean,
-        localExecutionSupported: Boolean,
+        localCapabilities: AndroidLocalCapabilities,
         scheduleEnabled: Boolean,
     ): ExecutionGuidance {
         val blockers = mutableListOf<String>()
         val warnings = mutableListOf<String>()
         val notes = mutableListOf<String>()
         val currentCapabilities = remoteCapabilities.takeIf { remoteConfigured && !remoteCapabilitiesStale }
-        val remoteCapabilitiesCurrent = currentCapabilities != null
         val remoteToolAvailable = currentCapabilities?.isToolAvailable(tool)
+        val localAssessment = AndroidLocalExecutionPlanner.assess(
+            tool = tool,
+            targets = targets,
+            arguments = arguments,
+            capabilities = localCapabilities,
+        )
 
         when (executionPreference) {
             ExecutionPreference.LOCAL_ONLY -> {
-                if (!localExecutionSupported) {
-                    blockers += "Local execution is not integrated yet in this baseline, so LOCAL ONLY cannot run this profile."
+                if (!localAssessment.supported) {
+                    blockers += localAssessment.blockers.ifEmpty {
+                        listOf("Android-local execution is not currently viable for this profile.")
+                    }
                 }
             }
 
@@ -71,8 +79,9 @@ object ExecutionGuidanceAdvisor {
             }
 
             ExecutionPreference.AUTO -> {
-                if (!localExecutionSupported && !remoteConfigured) {
-                    blockers += "AUTO currently has no viable route because local execution is unavailable and no remote executor is configured."
+                if (!localAssessment.supported && !remoteConfigured) {
+                    blockers += "AUTO currently has no viable route because Android-local execution is not viable and no remote executor is configured."
+                    blockers += localAssessment.blockers
                 }
             }
         }
@@ -82,10 +91,10 @@ object ExecutionGuidanceAdvisor {
         }
 
         val likelyRoute = when (executionPreference) {
-            ExecutionPreference.LOCAL_ONLY -> if (localExecutionSupported) ExecutionRoute.LOCAL else null
+            ExecutionPreference.LOCAL_ONLY -> if (localAssessment.supported) ExecutionRoute.LOCAL else null
             ExecutionPreference.REMOTE_ONLY -> if (remoteConfigured) ExecutionRoute.REMOTE else null
             ExecutionPreference.AUTO -> when {
-                localExecutionSupported -> ExecutionRoute.LOCAL
+                localAssessment.supported -> ExecutionRoute.LOCAL
                 remoteConfigured -> ExecutionRoute.REMOTE
                 else -> null
             }
@@ -101,8 +110,15 @@ object ExecutionGuidanceAdvisor {
             }
         }
 
-        if (executionPreference == ExecutionPreference.AUTO && !localExecutionSupported && remoteConfigured) {
-            notes += "AUTO will currently route this profile to the remote executor because local execution is unavailable in this baseline."
+        if (executionPreference == ExecutionPreference.AUTO && !localAssessment.supported && remoteConfigured) {
+            notes += "AUTO will currently route this profile to the remote executor because Android-local execution is not viable for this profile."
+        }
+
+        if (likelyRoute == ExecutionRoute.LOCAL) {
+            warnings += localAssessment.warnings
+            notes += localAssessment.notes
+        } else if (!localAssessment.supported) {
+            notes += localAssessment.blockers.map { blocker -> "Local route limitation: $blocker" }
         }
 
         currentCapabilities?.let { capabilities ->
@@ -121,7 +137,11 @@ object ExecutionGuidanceAdvisor {
             }
         }
 
-        val privilegedAccessReasons = detectPrivilegedAccessReasons(tool, arguments)
+        val privilegedAccessReasons = if (likelyRoute == ExecutionRoute.LOCAL) {
+            emptyList()
+        } else {
+            detectPrivilegedAccessReasons(tool, arguments)
+        }
         if (privilegedAccessReasons.isNotEmpty()) {
             val reasonText = privilegedAccessReasons.joinToString(separator = "; ")
             if (currentCapabilities?.privileged == true) {

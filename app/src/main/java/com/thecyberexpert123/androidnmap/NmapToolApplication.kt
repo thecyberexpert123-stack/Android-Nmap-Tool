@@ -4,7 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import com.thecyberexpert123.androidnmap.data.AppDatabase
 import com.thecyberexpert123.androidnmap.data.DefaultScanRepository
-import com.thecyberexpert123.androidnmap.execution.DisabledLocalToolExecutor
+import com.thecyberexpert123.androidnmap.execution.AndroidLocalToolExecutor
 import com.thecyberexpert123.androidnmap.execution.RemoteExecutorClient
 import com.thecyberexpert123.androidnmap.settings.RemoteSettingsStore
 import com.thecyberexpert123.androidnmap.work.AutomationScheduler
@@ -33,7 +33,7 @@ class NmapToolApplication : Application() {
             runDao = database.scanRunDao(),
             remoteSettingsStore = remoteSettingsStore,
             remoteExecutorClient = RemoteExecutorClient(),
-            localToolExecutor = DisabledLocalToolExecutor(),
+            localToolExecutor = AndroidLocalToolExecutor(applicationContext),
         )
 
         appContainer = AppContainer(

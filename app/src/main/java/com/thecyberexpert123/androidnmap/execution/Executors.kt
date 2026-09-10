@@ -1,6 +1,7 @@
 package com.thecyberexpert123.androidnmap.execution
 
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
+import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.ApiErrorResponse
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
@@ -22,18 +23,31 @@ private const val REMOTE_EXECUTE_PATH = "/api/v1/execute"
 data class LocalExecutionDecision(
     val canExecute: Boolean,
     val reason: String,
+    val blockers: List<String> = emptyList(),
+    val warnings: List<String> = emptyList(),
+    val notes: List<String> = emptyList(),
 )
 
 interface LocalToolExecutor {
+    fun capabilityProfile(): AndroidLocalCapabilities
     suspend fun inspect(request: ToolInvocationRequest): LocalExecutionDecision
     suspend fun execute(request: ToolInvocationRequest): ToolInvocationResponse
 }
 
 class DisabledLocalToolExecutor : LocalToolExecutor {
+    override fun capabilityProfile(): AndroidLocalCapabilities = AndroidLocalCapabilities(
+        available = false,
+        networkAvailable = false,
+        supportsTcpConnectScan = false,
+        supportsUdpDatagramProbes = false,
+        advisory = "Android-local execution is disabled in this runtime. Configure a remote executor for actual scan execution.",
+    )
+
     override suspend fun inspect(request: ToolInvocationRequest): LocalExecutionDecision =
         LocalExecutionDecision(
             canExecute = false,
-            reason = "Local execution is not integrated yet in this open-source baseline. Configure a remote executor for non-root Android devices.",
+            reason = "Android-local execution is disabled in this runtime. Configure a remote executor for actual scan execution.",
+            blockers = listOf("Android-local execution is disabled in this runtime."),
         )
 
     override suspend fun execute(request: ToolInvocationRequest): ToolInvocationResponse {

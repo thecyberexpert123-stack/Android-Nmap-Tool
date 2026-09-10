@@ -6,10 +6,17 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ExecutionPlanningTest {
+    private val localCapabilities = AndroidLocalCapabilities(
+        available = true,
+        networkAvailable = true,
+        activeNetworkSummary = "Wi-Fi — validated internet",
+    )
+
     @Test
-    fun `auto mode recommends remote execution when local execution is unavailable but remote capabilities are verified`() {
+    fun `auto mode recommends remote execution when local profile shape is unsupported but remote capabilities are verified`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NMAP,
+            targets = listOf("scanme.nmap.org"),
             executionPreference = ExecutionPreference.AUTO,
             arguments = listOf("-Pn", "-sV"),
             remoteConfigured = true,
@@ -29,7 +36,7 @@ class ExecutionPlanningTest {
                 nmapVersion = "Nmap 7.95",
             ),
             remoteCapabilitiesStale = false,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilities,
             scheduleEnabled = false,
         )
 
@@ -38,31 +45,56 @@ class ExecutionPlanningTest {
         assertTrue(guidance.summary.contains("remote executor"))
         assertTrue(guidance.notes.any { it.contains("structured Nmap XML") })
         assertTrue(guidance.notes.any { it.contains("lab-a") })
+        assertTrue(guidance.notes.any { it.contains("Local route limitation") })
     }
 
     @Test
     fun `auto mode blocks when neither local nor remote execution is viable`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NMAP,
+            targets = listOf("scanme.nmap.org/24"),
             executionPreference = ExecutionPreference.AUTO,
             arguments = listOf("-Pn"),
             remoteConfigured = false,
             remoteCapabilities = null,
             remoteCapabilitiesStale = false,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilities,
             scheduleEnabled = true,
         )
 
         assertEquals(ExecutionGuidanceStatus.BLOCKED, guidance.status)
         assertNull(guidance.likelyRoute)
         assertTrue(guidance.blockers.any { it.contains("no viable route") })
+        assertTrue(guidance.blockers.any { it.contains("discrete hosts only") })
         assertTrue(guidance.notes.any { it.contains("WorkManager") })
+    }
+
+    @Test
+    fun `local only quick tcp profile is ready with cautionary notes`() {
+        val guidance = ExecutionGuidanceAdvisor.analyze(
+            tool = ToolType.NMAP,
+            targets = listOf("scanme.nmap.org"),
+            executionPreference = ExecutionPreference.LOCAL_ONLY,
+            arguments = listOf("-Pn", "-F"),
+            remoteConfigured = false,
+            remoteCapabilities = null,
+            remoteCapabilitiesStale = false,
+            localCapabilities = localCapabilities,
+            scheduleEnabled = false,
+        )
+
+        assertEquals(ExecutionGuidanceStatus.CAUTION, guidance.status)
+        assertEquals(ExecutionRoute.LOCAL, guidance.likelyRoute)
+        assertTrue(guidance.summary.contains("run locally"))
+        assertTrue(guidance.warnings.any { it.contains("curated fast TCP port catalog") })
+        assertTrue(guidance.notes.any { it.contains("phase-A baseline") })
     }
 
     @Test
     fun `stale capability data yields caution rather than ready`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NCAT,
+            targets = listOf("scanme.nmap.org:80"),
             executionPreference = ExecutionPreference.REMOTE_ONLY,
             arguments = listOf("-v"),
             remoteConfigured = true,
@@ -80,7 +112,7 @@ class ExecutionPlanningTest {
                 executorLabel = "stale-lab",
             ),
             remoteCapabilitiesStale = true,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilities,
             scheduleEnabled = false,
         )
 
@@ -93,6 +125,7 @@ class ExecutionPlanningTest {
     fun `privileged nmap options warn when executor is not privileged`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NMAP,
+            targets = listOf("scanme.nmap.org"),
             executionPreference = ExecutionPreference.REMOTE_ONLY,
             arguments = listOf("-sS", "-Pn"),
             remoteConfigured = true,
@@ -110,7 +143,7 @@ class ExecutionPlanningTest {
                 supportsStructuredNmapXml = true,
             ),
             remoteCapabilitiesStale = false,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilities,
             scheduleEnabled = false,
         )
 
@@ -123,6 +156,7 @@ class ExecutionPlanningTest {
     fun `verified remote tool absence blocks remote execution`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NPING,
+            targets = listOf("scanme.nmap.org"),
             executionPreference = ExecutionPreference.REMOTE_ONLY,
             arguments = listOf("--tcp-connect"),
             remoteConfigured = true,
@@ -139,7 +173,7 @@ class ExecutionPlanningTest {
                 advisory = "Remote execution is preferred.",
             ),
             remoteCapabilitiesStale = false,
-            localExecutionSupported = false,
+            localCapabilities = localCapabilities,
             scheduleEnabled = false,
         )
 

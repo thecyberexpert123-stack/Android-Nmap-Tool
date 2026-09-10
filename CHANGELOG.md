@@ -86,6 +86,10 @@ The format is intentionally simple and incremental so each agent session can app
 - Added remote executor governance controls for optional JSONL audit logging and configurable max-concurrency protection.
 - Added request IDs to API error responses so Android-side operator messages can correlate failures with backend audit entries.
 - Expanded remote capability reporting to include audit-logging state and max-concurrency configuration.
+- Added a real Android-local phase-A execution baseline using stock socket APIs instead of a disabled stub executor.
+- Added shared Android-local execution planning for bounded TCP connect scans, single-target TCP session probes, and bounded TCP-connect/UDP timing probes.
+- Added local capability snapshot reporting in the Android UI, including active-network visibility and local execution limits.
+- Updated builder execution guidance so local-vs-remote routing now considers actual Android-local compatibility rather than treating local execution as globally unavailable.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

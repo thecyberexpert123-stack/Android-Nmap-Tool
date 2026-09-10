@@ -4,6 +4,7 @@ import com.thecyberexpert123.androidnmap.execution.LocalToolExecutor
 import com.thecyberexpert123.androidnmap.execution.RemoteExecutorClient
 import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
 import com.thecyberexpert123.androidnmap.settings.RemoteSettingsStore
+import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
@@ -268,6 +269,8 @@ class DefaultScanRepository(
     }
 
     fun readRemoteSettings(): RemoteEndpointSettings = remoteSettingsStore.read()
+
+    fun readLocalCapabilities(): AndroidLocalCapabilities = localToolExecutor.capabilityProfile()
 
     fun saveRemoteSettings(settings: RemoteEndpointSettings): ValidationResult<Unit> {
         val normalizedUrl = settings.baseUrl.trim()
