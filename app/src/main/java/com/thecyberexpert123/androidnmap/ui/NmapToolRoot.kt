@@ -59,17 +59,23 @@ import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
 import com.thecyberexpert123.androidnmap.reporting.ReportFileManager
 import com.thecyberexpert123.androidnmap.reporting.buildExecutionReport
+import com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityDescriptor
+import com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityLevel
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
+import com.thecyberexpert123.nmaptool.contract.ExecutorCapabilityProfile
+import com.thecyberexpert123.nmaptool.contract.ExecutorNodeKind
+import com.thecyberexpert123.nmaptool.contract.ExecutorTransportKind
+import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
+import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ResultParseSource
 import com.thecyberexpert123.nmaptool.contract.ReportExportFormat
 import com.thecyberexpert123.nmaptool.contract.RunStatus
-import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
-import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.ScanPreset
 import com.thecyberexpert123.nmaptool.contract.ToolType
+import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import java.text.DateFormat
 import java.util.Date
 
@@ -288,7 +294,7 @@ private fun DashboardScreen(
             ) {
                 MetricCard(title = "Scheduled profiles", value = scheduledProfiles.toString(), modifier = Modifier.weight(1f))
                 MetricCard(title = "Profiles with failed last run", value = failedProfiles.toString(), modifier = Modifier.weight(1f))
-                MetricCard(title = "Executor configured", value = if (remoteConfigured) "Yes" else "No", modifier = Modifier.weight(1f))
+                MetricCard(title = "Delegated executor configured", value = if (remoteConfigured) "Yes" else "No", modifier = Modifier.weight(1f))
             }
         }
         item {
@@ -296,10 +302,9 @@ private fun DashboardScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Execution posture", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        text = capabilityState.capabilities?.advisory
-                            ?: "Remote execution is the primary path for full/raw Nmap functionality on non-root Android, while Android-local execution stays capability-gated and socket-limited.",
+                        text = "This app now treats scanning as capability-aware execution routing: Android-local socket probing stays on-device, while raw/fuller Nmap features are delegated to a legitimate executor that actually has them.",
                     )
-                    Text(text = if (remoteConfigured) "Remote executor base URL is configured." else "Remote executor base URL is not configured yet.")
+                    Text(text = if (remoteConfigured) "Delegated executor base URL is configured." else "Delegated executor base URL is not configured yet.")
                     Text(
                         text = if (localCapabilityState.capabilities.networkAvailable) {
                             "Android-local engine sees an active network: ${localCapabilityState.capabilities.activeNetworkSummary.orEmpty()}"
@@ -308,13 +313,19 @@ private fun DashboardScreen(
                         },
                     )
                     capabilityState.capabilities?.executorLabel?.takeIf(String::isNotBlank)?.let { label ->
-                        Text(text = "Connected executor label: $label")
+                        Text(text = "Connected delegated executor label: $label")
                     }
                     capabilityState.error?.takeIf(String::isNotBlank)?.let { error ->
-                        Text(text = "Latest capability check error: $error", color = MaterialTheme.colorScheme.error)
+                        Text(text = "Latest delegated capability check error: $error", color = MaterialTheme.colorScheme.error)
+                    }
+                    ExecutorCapabilityProfileCard(profile = localCapabilityState.executorProfile)
+                    capabilityState.capabilities?.let { remoteCapabilities ->
+                        ExecutorCapabilityProfileCard(
+                            profile = remoteCapabilities.executorProfile ?: remoteCapabilities.toExecutorCapabilityProfile(),
+                        )
                     }
                     Text(
-                        text = "Use Builder for structured Nmap controls, expert arguments, autonomous scheduling, and saved profiles.",
+                        text = "Use Builder for structured Nmap controls, expert arguments, autonomous scheduling, saved profiles, and executor-aware planning.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Button(onClick = onNewScan) {
@@ -646,12 +657,18 @@ private fun ExecutionGuidanceCard(
                 text = "Likely route: ${guidance.likelyRoute?.name ?: "UNRESOLVED"}",
                 style = MaterialTheme.typography.bodySmall,
             )
+            guidance.likelyExecutorTitle?.let { executorTitle ->
+                Text(
+                    text = "Likely executor: $executorTitle",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
                 Text(
                     text = if (capabilityState.stale) {
-                        "Capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
+                        "Delegated capability check is stale. Last checked ${formatTimestamp(checkedAt)}."
                     } else {
-                        "Capabilities last checked ${formatTimestamp(checkedAt)}."
+                        "Delegated capabilities last checked ${formatTimestamp(checkedAt)}."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -935,33 +952,18 @@ private fun SettingsScreen(
     ) {
         Text(text = "Execution settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, while remote mode remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving remote settings also re-checks backend capabilities when a base URL is configured.",
+            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, while delegated execution remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving delegated-executor settings also re-checks backend capabilities when a base URL is configured.",
         )
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(text = "Android-local capability report", style = MaterialTheme.typography.titleMedium)
-                Text(text = "snapshot captured: ${formatTimestamp(localCapabilityState.lastCheckedAtEpochMillis)}")
-                Text(text = "local engine available: ${localCapabilityState.capabilities.available}")
-                Text(text = "active network available: ${localCapabilityState.capabilities.networkAvailable}")
-                Text(text = "active network: ${localCapabilityState.capabilities.activeNetworkSummary.orEmpty()}")
-                Text(text = "tcp connect scanning: ${localCapabilityState.capabilities.supportsTcpConnectScan}")
-                Text(text = "udp application probes: ${localCapabilityState.capabilities.supportsUdpDatagramProbes}")
-                Text(text = "curated service detection: ${localCapabilityState.capabilities.supportsServiceDetection}")
-                Text(text = "android fingerprinting: ${localCapabilityState.capabilities.supportsAndroidFingerprinting}")
-                Text(text = "raw packet access: ${localCapabilityState.capabilities.supportsRawPackets}")
-                Text(text = "nmap os detection parity: ${localCapabilityState.capabilities.supportsNmapOsDetection}")
-                Text(text = "nse/default scripts: ${localCapabilityState.capabilities.supportsNmapDefaultScripts}")
-                Text(text = "traceroute: ${localCapabilityState.capabilities.supportsTraceroute}")
-                Text(text = "max targets per local run: ${localCapabilityState.capabilities.maxTargetsPerRun}")
-                Text(text = "max ports per target: ${localCapabilityState.capabilities.maxPortsPerTarget}")
-                Text(text = "max total socket probes: ${localCapabilityState.capabilities.maxTotalProbes}")
-                Text(text = localCapabilityState.capabilities.advisory)
+        ExecutorCapabilityProfileCard(
+            profile = localCapabilityState.executorProfile,
+            subtitle = "Snapshot captured ${formatTimestamp(localCapabilityState.lastCheckedAtEpochMillis)}",
+            footer = {
                 Button(onClick = onRefreshLocalCapabilities) {
                     Text("Refresh local snapshot")
                 }
-            }
-        }
-        Text(text = "Remote executor settings", style = MaterialTheme.typography.titleLarge)
+            },
+        )
+        Text(text = "Delegated executor settings", style = MaterialTheme.typography.titleLarge)
         OutlinedTextField(
             value = settingsState.baseUrl,
             onValueChange = onBaseUrlChanged,
@@ -1000,36 +1002,28 @@ private fun SettingsScreen(
             )
         }
         capabilityState.capabilities?.let { capabilities ->
-            Card {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = "Remote capability report", style = MaterialTheme.typography.titleMedium)
-                    capabilities.executorLabel?.takeIf(String::isNotBlank)?.let {
-                        Text(text = "executor label: $it")
+            ExecutorCapabilityProfileCard(
+                profile = capabilities.executorProfile ?: capabilities.toExecutorCapabilityProfile(),
+                subtitle = capabilityState.lastCheckedAtEpochMillis?.let { checkedAt ->
+                    if (capabilityState.stale) {
+                        "Snapshot captured ${formatTimestamp(checkedAt)} and is stale relative to unsaved settings changes."
+                    } else {
+                        "Snapshot captured ${formatTimestamp(checkedAt)}"
                     }
-                    Text(text = "nmap available: ${capabilities.nmapAvailable}")
-                    capabilities.nmapVersion?.takeIf(String::isNotBlank)?.let {
-                        Text(text = "nmap version: $it")
+                },
+                footer = {
+                    if (capabilities.nmapVersion?.isNotBlank() == true) {
+                        Text(text = "nmap version: ${capabilities.nmapVersion}", style = MaterialTheme.typography.bodySmall)
                     }
-                    Text(text = "ncat available: ${capabilities.ncatAvailable}")
-                    capabilities.ncatVersion?.takeIf(String::isNotBlank)?.let {
-                        Text(text = "ncat version: $it")
+                    if (capabilities.ncatVersion?.isNotBlank() == true) {
+                        Text(text = "ncat version: ${capabilities.ncatVersion}", style = MaterialTheme.typography.bodySmall)
                     }
-                    Text(text = "nping available: ${capabilities.npingAvailable}")
-                    capabilities.npingVersion?.takeIf(String::isNotBlank)?.let {
-                        Text(text = "nping version: $it")
+                    if (capabilities.npingVersion?.isNotBlank() == true) {
+                        Text(text = "nping version: ${capabilities.npingVersion}", style = MaterialTheme.typography.bodySmall)
                     }
-                    Text(text = "privileged raw access: ${capabilities.privileged}")
-                    Text(text = "requires authentication: ${capabilities.requiresAuthentication}")
-                    Text(text = "max targets per request: ${capabilities.maxTargetsPerRequest}")
-                    Text(text = "max arguments per request: ${capabilities.maxArgumentsPerRequest}")
-                    Text(text = "captured output limit: ${capabilities.outputCaptureLimitBytes} bytes")
-                    Text(text = "max concurrent executions: ${capabilities.maxConcurrentExecutions}")
-                    Text(text = "audit logging enabled: ${capabilities.auditLoggingEnabled}")
-                    Text(text = "target policy: ${capabilities.targetPolicySummary}")
-                    Text(text = "structured Nmap XML support: ${capabilities.supportsStructuredNmapXml}")
-                    Text(text = capabilities.advisory)
-                }
-            }
+                    Text(text = "target policy: ${capabilities.targetPolicySummary}", style = MaterialTheme.typography.bodySmall)
+                },
+            )
         }
         capabilityState.error?.let { error ->
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
@@ -1037,6 +1031,66 @@ private fun SettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ExecutorCapabilityProfileCard(
+    profile: ExecutorCapabilityProfile,
+    subtitle: String? = null,
+    footer: (@Composable () -> Unit)? = null,
+) {
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = profile.label, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "${formatExecutorNodeKind(profile.kind)} • ${formatExecutorTransportKind(profile.transport)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            subtitle?.takeIf(String::isNotBlank)?.let {
+                Text(text = it, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(text = "available: ${profile.available}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "requires authentication: ${profile.requiresAuthentication}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "privileged/raw access: ${profile.privileged}", style = MaterialTheme.typography.bodySmall)
+            profile.activeNetworkSummary?.takeIf(String::isNotBlank)?.let {
+                Text(text = "network context: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.maxTargetsPerRun?.let {
+                Text(text = "max targets per run: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.maxArgumentsPerRun?.let {
+                Text(text = "max arguments per run: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.maxPortsPerTarget?.let {
+                Text(text = "max ports per target: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.maxTotalProbesPerRun?.let {
+                Text(text = "max total probes per run: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.maxConcurrentExecutions?.let {
+                Text(text = "max concurrent executions: $it", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.outputCaptureLimitBytes?.let {
+                Text(text = "captured output limit: $it bytes", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(text = profile.advisory, style = MaterialTheme.typography.bodySmall)
+            if (profile.capabilities.isNotEmpty()) {
+                Text(text = "Capability matrix", style = MaterialTheme.typography.titleSmall)
+                profile.capabilities.forEach { capability ->
+                    ExecutionCapabilityRow(capability = capability)
+                }
+            }
+            footer?.invoke()
+        }
+    }
+}
+
+@Composable
+private fun ExecutionCapabilityRow(capability: ExecutionCapabilityDescriptor) {
+    Text(
+        text = "• ${formatCapabilityId(capability)}: ${formatCapabilityLevel(capability.level)} — ${capability.summary}",
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable
@@ -1300,6 +1354,43 @@ private fun SelectorSection(
             content()
         }
     }
+}
+
+private fun formatExecutorNodeKind(kind: ExecutorNodeKind): String = when (kind) {
+    ExecutorNodeKind.ANDROID_LOCAL -> "Android local executor"
+    ExecutorNodeKind.REMOTE_NMAP -> "Delegated remote Nmap executor"
+    ExecutorNodeKind.LAN_AGENT -> "Delegated LAN agent"
+    ExecutorNodeKind.UNKNOWN -> "Unknown executor"
+}
+
+private fun formatExecutorTransportKind(transport: ExecutorTransportKind): String = when (transport) {
+    ExecutorTransportKind.ON_DEVICE -> "On-device transport"
+    ExecutorTransportKind.HTTPS -> "HTTPS transport"
+    ExecutorTransportKind.VPN_TUNNEL -> "VPN tunnel transport"
+    ExecutorTransportKind.PRIVATE_OVERLAY -> "Private overlay transport"
+    ExecutorTransportKind.UNKNOWN -> "Unknown transport"
+}
+
+private fun formatCapabilityId(capability: ExecutionCapabilityDescriptor): String = when (capability.id) {
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.TCP_CONNECT_SCAN -> "TCP connect scan"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.UDP_APPLICATION_PROBES -> "UDP application probes"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.PASSIVE_BANNER_CAPTURE -> "Passive banner capture"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.CURATED_SERVICE_DETECTION -> "Curated service detection"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.ANDROID_FINGERPRINT_INFERENCE -> "Android fingerprint inference"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.RAW_PACKET_PROBES -> "Raw packet probes"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.NMAP_OS_DETECTION -> "Nmap OS detection"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.NSE_SCRIPTS -> "NSE scripts"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.TRACEROUTE -> "Traceroute"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.STRUCTURED_NMAP_XML -> "Structured Nmap XML"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.AUTHENTICATED_API -> "Authenticated API"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.AUDIT_LOGGING -> "Audit logging"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.CONCURRENCY_GOVERNANCE -> "Concurrency governance"
+}
+
+private fun formatCapabilityLevel(level: ExecutionCapabilityLevel): String = when (level) {
+    ExecutionCapabilityLevel.SUPPORTED -> "supported"
+    ExecutionCapabilityLevel.LIMITED -> "limited"
+    ExecutionCapabilityLevel.UNSUPPORTED -> "unsupported"
 }
 
 private fun formatFinding(finding: PortFinding): String = buildString {

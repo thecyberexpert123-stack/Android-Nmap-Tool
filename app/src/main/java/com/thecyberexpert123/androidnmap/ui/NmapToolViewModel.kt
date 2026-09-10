@@ -18,6 +18,7 @@ import com.thecyberexpert123.nmaptool.contract.ExecutionGuidance
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceAdvisor
 import com.thecyberexpert123.nmaptool.contract.ExecutionGuidanceStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
+import com.thecyberexpert123.nmaptool.contract.ExecutorCapabilityProfile
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunTrigger
@@ -26,6 +27,7 @@ import com.thecyberexpert123.nmaptool.contract.StructuredNmapArgumentComposer
 import com.thecyberexpert123.nmaptool.contract.StructuredNmapOptions
 import com.thecyberexpert123.nmaptool.contract.TargetParser
 import com.thecyberexpert123.nmaptool.contract.ToolType
+import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -76,6 +78,7 @@ data class CapabilityUiState(
 
 data class LocalCapabilityUiState(
     val capabilities: AndroidLocalCapabilities,
+    val executorProfile: ExecutorCapabilityProfile,
     val lastCheckedAtEpochMillis: Long,
 )
 
@@ -106,10 +109,13 @@ class NmapToolViewModel(
     val capabilityState: StateFlow<CapabilityUiState> = _capabilityState.asStateFlow()
 
     private val _localCapabilityState = MutableStateFlow(
-        LocalCapabilityUiState(
-            capabilities = repository.readLocalCapabilities(),
-            lastCheckedAtEpochMillis = System.currentTimeMillis(),
-        ),
+        repository.readLocalCapabilities().let { capabilities ->
+            LocalCapabilityUiState(
+                capabilities = capabilities,
+                executorProfile = capabilities.toExecutorCapabilityProfile(),
+                lastCheckedAtEpochMillis = System.currentTimeMillis(),
+            )
+        },
     )
     val localCapabilityState: StateFlow<LocalCapabilityUiState> = _localCapabilityState.asStateFlow()
 
@@ -335,8 +341,8 @@ class NmapToolViewModel(
                     null
                 }
                 _message.value = capabilityRefreshError?.let {
-                    "Remote executor settings saved securely on-device, but capability refresh failed."
-                } ?: "Remote executor settings saved securely on-device."
+                    "Delegated executor settings saved securely on-device, but capability refresh failed."
+                } ?: "Delegated executor settings saved securely on-device."
             } else {
                 _message.value = result.issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
             }
@@ -356,8 +362,10 @@ class NmapToolViewModel(
     }
 
     fun refreshLocalCapabilities() {
+        val refreshed = repository.readLocalCapabilities()
         _localCapabilityState.value = LocalCapabilityUiState(
-            capabilities = repository.readLocalCapabilities(),
+            capabilities = refreshed,
+            executorProfile = refreshed.toExecutorCapabilityProfile(),
             lastCheckedAtEpochMillis = System.currentTimeMillis(),
         )
         refreshBuilderDerivedState()

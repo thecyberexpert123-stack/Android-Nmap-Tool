@@ -33,6 +33,7 @@ enum class ExecutionGuidanceStatus {
 data class ExecutionGuidance(
     val status: ExecutionGuidanceStatus = ExecutionGuidanceStatus.CAUTION,
     val likelyRoute: ExecutionRoute? = null,
+    val likelyExecutorTitle: String? = null,
     val summary: String = "Complete the profile and verify capabilities to evaluate execution readiness.",
     val blockers: List<String> = emptyList(),
     val warnings: List<String> = emptyList(),
@@ -74,13 +75,13 @@ object ExecutionGuidanceAdvisor {
 
             ExecutionPreference.REMOTE_ONLY -> {
                 if (!remoteConfigured) {
-                    blockers += "REMOTE ONLY was selected, but no remote executor base URL is configured."
+                    blockers += "REMOTE ONLY was selected, but no delegated executor base URL is configured."
                 }
             }
 
             ExecutionPreference.AUTO -> {
                 if (!localAssessment.supported && !remoteConfigured) {
-                    blockers += "AUTO currently has no viable route because Android-local execution is not viable and no remote executor is configured."
+                    blockers += "AUTO currently has no viable route because Android-local execution is not viable and no delegated executor is configured."
                     blockers += localAssessment.blockers
                 }
             }
@@ -99,19 +100,26 @@ object ExecutionGuidanceAdvisor {
                 else -> null
             }
         }
+        val likelyExecutorTitle = when (likelyRoute) {
+            ExecutionRoute.LOCAL -> localCapabilities.toExecutorCapabilityProfile().label
+            ExecutionRoute.REMOTE -> remoteCapabilities?.executorProfile?.label
+                ?: remoteCapabilities?.executorLabel?.takeIf(String::isNotBlank)
+                ?: "Delegated remote Nmap executor"
+            ExecutionRoute.BLOCKED, null -> null
+        }
 
         if (likelyRoute == ExecutionRoute.REMOTE) {
             if (remoteCapabilities == null) {
-                warnings += "Remote executor is configured, but its capabilities have not been checked yet. Refresh capabilities before trusting route assumptions."
+                warnings += "A delegated executor is configured, but its capabilities have not been checked yet. Refresh capabilities before trusting route assumptions."
             } else if (remoteCapabilitiesStale) {
-                warnings += "Displayed remote capabilities are stale relative to the current unsaved settings. Save or refresh before trusting them."
+                warnings += "Displayed delegated-executor capabilities are stale relative to the current unsaved settings. Save or refresh before trusting them."
             } else if (remoteToolAvailable == false) {
-                blockers += "The remote executor does not currently report ${tool.binaryName} as available."
+                blockers += "The delegated executor does not currently report ${tool.binaryName} as available."
             }
         }
 
         if (executionPreference == ExecutionPreference.AUTO && !localAssessment.supported && remoteConfigured) {
-            notes += "AUTO will currently route this profile to the remote executor because Android-local execution is not viable for this profile."
+            notes += "AUTO will currently route this profile to the delegated executor because Android-local execution is not viable for this profile."
         }
 
         if (likelyRoute == ExecutionRoute.LOCAL) {
@@ -130,9 +138,9 @@ object ExecutionGuidanceAdvisor {
             }
             if (tool == ToolType.NMAP) {
                 if (capabilities.supportsStructuredNmapXml) {
-                    notes += "Remote executor reports structured Nmap XML support for higher-fidelity saved summaries."
+                    notes += "The delegated executor reports structured Nmap XML support for higher-fidelity saved summaries."
                 } else {
-                    warnings += "Remote executor does not report structured Nmap XML support; saved Nmap summaries will rely on text heuristics."
+                    warnings += "The delegated executor does not report structured Nmap XML support; saved Nmap summaries will rely on text heuristics."
                 }
             }
         }
@@ -159,8 +167,8 @@ object ExecutionGuidanceAdvisor {
 
         val summary = when {
             status == ExecutionGuidanceStatus.BLOCKED -> "No fully viable execution route is currently available for this profile."
-            likelyRoute == ExecutionRoute.REMOTE && status == ExecutionGuidanceStatus.READY -> "This profile is ready to run through the remote executor."
-            likelyRoute == ExecutionRoute.REMOTE -> "This profile is likely to run through the remote executor, but review the warnings below."
+            likelyRoute == ExecutionRoute.REMOTE && status == ExecutionGuidanceStatus.READY -> "This profile is ready to run through the delegated executor."
+            likelyRoute == ExecutionRoute.REMOTE -> "This profile is likely to run through the delegated executor, but review the warnings below."
             likelyRoute == ExecutionRoute.LOCAL && status == ExecutionGuidanceStatus.READY -> "This profile is ready to run locally."
             likelyRoute == ExecutionRoute.LOCAL -> "This profile can run locally, but review the warnings below."
             else -> "Execution readiness could not be determined from the current inputs."
@@ -169,6 +177,7 @@ object ExecutionGuidanceAdvisor {
         return ExecutionGuidance(
             status = status,
             likelyRoute = likelyRoute,
+            likelyExecutorTitle = likelyExecutorTitle,
             summary = summary,
             blockers = blockers.distinct(),
             warnings = warnings.distinct(),

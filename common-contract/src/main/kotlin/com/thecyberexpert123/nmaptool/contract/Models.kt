@@ -96,6 +96,7 @@ data class RemoteCapabilitiesResponse(
     val npingVersion: String? = null,
     val auditLoggingEnabled: Boolean = false,
     val maxConcurrentExecutions: Int = 1,
+    val executorProfile: ExecutorCapabilityProfile? = null,
 )
 
 @Serializable

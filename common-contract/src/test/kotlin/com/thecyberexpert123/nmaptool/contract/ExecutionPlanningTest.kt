@@ -42,7 +42,8 @@ class ExecutionPlanningTest {
 
         assertEquals(ExecutionGuidanceStatus.READY, guidance.status)
         assertEquals(ExecutionRoute.REMOTE, guidance.likelyRoute)
-        assertTrue(guidance.summary.contains("remote executor"))
+        assertEquals("lab-a", guidance.likelyExecutorTitle)
+        assertTrue(guidance.summary.contains("delegated executor"))
         assertTrue(guidance.notes.any { it.contains("structured Nmap XML") })
         assertTrue(guidance.notes.any { it.contains("lab-a") })
         assertTrue(guidance.notes.any { it.contains("Local route limitation") })
@@ -85,6 +86,7 @@ class ExecutionPlanningTest {
 
         assertEquals(ExecutionGuidanceStatus.CAUTION, guidance.status)
         assertEquals(ExecutionRoute.LOCAL, guidance.likelyRoute)
+        assertEquals("Android local executor", guidance.likelyExecutorTitle)
         assertTrue(guidance.summary.contains("run locally"))
         assertTrue(guidance.warnings.any { it.contains("curated fast TCP port catalog") })
         assertTrue(guidance.notes.any { it.contains("phase-A baseline") })
@@ -118,6 +120,7 @@ class ExecutionPlanningTest {
 
         assertEquals(ExecutionGuidanceStatus.CAUTION, guidance.status)
         assertEquals(ExecutionRoute.REMOTE, guidance.likelyRoute)
+        assertEquals("stale-lab", guidance.likelyExecutorTitle)
         assertTrue(guidance.warnings.any { it.contains("stale") })
     }
 

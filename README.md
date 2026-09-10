@@ -1,14 +1,14 @@
 # Android Nmap Tool
 
-Android Nmap Tool is a production-oriented, open-source foundation for a **hybrid Nmap client on Android**.
+Android Nmap Tool is a production-oriented, open-source foundation for a **capability-aware Android network-scanning platform**.
 
 It is designed around one hard technical reality:
 
 - **non-root Android devices cannot honestly provide full desktop Nmap parity locally**, because several Nmap capabilities depend on raw-packet privileges and related low-level access.
-- therefore this project uses a **hybrid execution model**:
-  - **remote execution** for broad and honest feature coverage on modern non-root Android devices,
+- therefore this project uses a **distributed execution model**:
   - **Android-local socket-based execution** for the subset of transport probing that stock Android legitimately permits,
-  - **transparent execution routing** so the app never pretends a capability exists when it does not.
+  - **delegated execution** for broader and more privileged scan behavior on capable endpoints,
+  - **transparent capability routing** so the app never pretends a capability exists when it does not.
 
 ## Project goals
 
@@ -16,7 +16,7 @@ It is designed around one hard technical reality:
 - Support for `nmap`, `ncat`, and `nping`
 - Expert-argument mode for broad CLI compatibility
 - Autonomous recurring execution using Android-compliant scheduling primitives
-- Secure remote executor integration with encrypted token storage on Android
+- Secure delegated-executor integration with encrypted token storage on Android
 - Clear documentation, auditability, and scope discipline
 
 ## Current repository contents
@@ -25,7 +25,7 @@ This repository now contains:
 
 - `app/` — Android app using Kotlin + Jetpack Compose + Room + WorkManager
 - `common-contract/` — shared request/response models, validation logic, structured parsing, and report rendering used by both Android and backend
-- `remote-executor/` — Ktor-based backend that runs validated tool requests through `ProcessBuilder`
+- `remote-executor/` — Ktor-based delegated backend that runs validated tool requests through `ProcessBuilder`
 - `CHANGELOG.md` — incremental change tracking
 - `AGENT-EXPERIENCE.md` — development decisions, lessons, and constraints
 
@@ -37,26 +37,27 @@ Android app
  ├─ Saved profiles
  ├─ Automation / WorkManager scheduling
  ├─ History and result inspection
- ├─ Remote endpoint configuration
- └─ Execution routing
+ ├─ Executor configuration
+ └─ Capability router
         │
         ├─ Android-local executor
         │    ├─ TCP connect scanning for bounded Nmap-compatible profiles
         │    ├─ single-target TCP session probing for bounded Ncat-style use
         │    └─ bounded TCP-connect / UDP datagram timing probes for Android-local Nping mode
         │
-        └─ Remote executor client
-             └─ shared validation + structured JSON API
+        └─ Delegated executor client
+             └─ structured JSON API to a legitimate capable endpoint
 
 Shared contract module
  ├─ tool enums
  ├─ request/response models
+ ├─ capability-profile models
  ├─ target parsing
  ├─ expert-argument tokenization
  ├─ command safety policy
  └─ deterministic command preview generation
 
-Remote executor
+Delegated executor
  ├─ capability endpoint
  ├─ execute endpoint
  ├─ bearer-token gate
@@ -64,15 +65,41 @@ Remote executor
  └─ process execution with timeout
 ```
 
-## Why the hybrid model is required
+## Capability delegation principle
+
+This project is now framed around one architectural rule:
+
+> If Android cannot legitimately perform an operation itself, the app should not try to bypass Android's security boundary. It should delegate that operation to an executor that already has the required capability.
+
+That means:
+
+- Android-local execution remains useful for socket-compatible scans.
+- Delegated execution is the honest path for raw-packet-sensitive or fuller-parity Nmap behavior.
+- The app is the planner, router, UI, and analysis surface; it is not required to be the place where every packet is created.
+
+## Transport is not privilege
+
+The project keeps transport and execution capability separate:
+
+- **HTTPS / ordinary networking** can carry authenticated scan requests.
+- **VPN tunnels** can provide secure or private connectivity to an executor.
+- **Routers / LAN appliances** only become executors when they actually run authorized software that accepts requests and performs scans.
+
+In other words:
+
+- encryption does not create privilege
+- tunneling does not create packet-crafting capability
+- forwarding does not equal packet generation
+
+## Why the distributed model is required
 
 Some Nmap scan classes rely on privileged raw-packet access. On Unix-like systems, SYN scan and several low-level modes require elevated privileges. Modern Android also restricts background work and long-running execution, so recurring scans must use platform-compliant scheduling such as WorkManager and foreground execution patterns where needed.
 
 This project chooses correctness over false claims:
 
-- **remote mode** is the primary compatibility path for broader/full Nmap behavior on non-root devices
-- **local mode** remains explicitly capability-gated and limited to what stock Android socket APIs can actually do
-- **auto mode** prefers Android-local execution only when the current request fits the bounded local transport subset; otherwise it routes remotely when possible instead of failing silently
+- **Android-local mode** is limited to what stock Android socket APIs can actually do
+- **delegated executor mode** is the primary compatibility path for broader/full Nmap behavior on non-root devices
+- **auto mode** prefers Android-local execution only when the current request fits the bounded local transport subset; otherwise it routes to a delegated executor when possible instead of failing silently
 
 ## Android app features in this milestone
 
@@ -103,12 +130,13 @@ This project chooses correctness over false claims:
 - Shared validation for targets and arguments
 - Room persistence for profiles, schedules, and run history
 - WorkManager-based recurring scan scheduling
-- Remote executor settings with **Android Keystore-encrypted bearer token storage**
-- Capability refresh from the backend
-- Automatic capability re-check after saving remote executor settings
+- Delegated executor settings with **Android Keystore-encrypted bearer token storage**
+- Capability refresh from delegated executors
+- Automatic capability re-check after saving delegated executor settings
 - Capability staleness tracking when settings are edited after a refresh
-- Remote capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
-- Builder-side execution guidance that explains likely routing, blockers, warnings, and privileged-access caveats before a run is launched
+- Shared executor capability profiles for Android-local and delegated execution nodes, including feature matrices and execution limits
+- Delegated capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
+- Builder-side execution guidance that explains likely route, likely executor, blockers, warnings, and privileged-access caveats before a run is launched
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 - Dashboard insight cards for:
@@ -134,7 +162,7 @@ This project chooses correctness over false claims:
 - Android-local phase-A execution does **not** claim parity with raw-packet Nmap features such as SYN scan, OS detection parity, NSE/default scripts, or traceroute.
 - Android-local Nmap mode currently supports bounded TCP connect scanning only and requires an explicit port strategy such as `-p`, `--top-ports`, or `-F`.
 - Android-local Ncat/Nping support is likewise bounded and intentionally conservative.
-- If you need broader/full Nmap behavior, configure the remote executor.
+- If you need broader/full Nmap behavior, configure a delegated executor such as the current remote Linux Nmap backend.
 
 ## Security model
 
@@ -146,7 +174,7 @@ This project chooses correctness over false claims:
 - remote bearer token is encrypted with Android Keystore before storage
 - automation uses WorkManager rather than unrestricted background processes
 
-### Remote executor
+### Delegated executor
 - uses structured JSON requests, not raw shell command strings
 - invokes tools with `ProcessBuilder` argv lists
 - rejects security-sensitive flags that would enable:
@@ -155,6 +183,7 @@ This project chooses correctness over false claims:
   - ncat command execution modes
 - for `nmap` requests, the executor can capture **normal output plus structured XML output** using executor-managed temporary files for programmatic parsing
 - returns explicit truncation metadata for stdout, stderr, and structured XML captures so the Android client can warn about incomplete results
+- publishes a feature-based executor capability profile in addition to raw tool-availability fields
 - can enforce an executor-side concurrency ceiling to reduce host overload
 - can append lightweight JSONL audit events with request IDs, execution outcome, and truncation metadata
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
@@ -162,7 +191,7 @@ This project chooses correctness over false claims:
 - bounded output capture via `MAX_OUTPUT_BYTES`
 - enforces execution timeout
 
-## Supported remote executor environment variables
+## Supported delegated executor environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -174,7 +203,7 @@ This project chooses correctness over false claims:
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
 | `EXECUTION_TIMEOUT_SECONDS` | Maximum runtime per request | `900` |
 | `MAX_OUTPUT_BYTES` | Per-stream capture limit for stdout/stderr and executor-managed Nmap output files | `262144` |
-| `MAX_CONCURRENT_EXECUTIONS` | Maximum simultaneous in-flight executions allowed by the remote executor | `2` |
+| `MAX_CONCURRENT_EXECUTIONS` | Maximum simultaneous in-flight executions allowed by the delegated executor | `2` |
 | `AUDIT_LOG_PATH` | Optional JSONL audit log destination for request/execution events | unset |
 | `ALLOWED_TARGET_REGEXES` | Optional semicolon-separated regex allowlist for targets | unset |
 
@@ -185,7 +214,7 @@ This project chooses correctness over false claims:
 - Android SDK / Build Tools compatible with AGP 9.2
 - Android Studio version compatible with AGP 9.2+
 
-### Remote executor
+### Delegated executor
 - JDK 17
 - `nmap`, `ncat`, `nping` installed on the host according to your deployment plan
 
@@ -196,7 +225,7 @@ This project chooses correctness over false claims:
 ./gradlew :app:assembleDebug
 ```
 
-### Remote executor
+### Delegated executor
 ```bash
 ./gradlew :remote-executor:run
 ```
@@ -217,9 +246,9 @@ export NPING_BINARY="nping"
 ## Example workflow
 
 1. Install the Android app.
-2. If you want broader/full Nmap coverage, start the remote executor on a host you control.
-3. Open **Settings** and configure the remote base URL and optional bearer token when you plan to use remote mode.
-4. Refresh capabilities to confirm the backend sees `nmap`, `ncat`, and `nping`, and use **Refresh local snapshot** to review stock-device limits.
+2. If you want broader/full Nmap coverage, start the delegated executor on a host you control.
+3. Open **Settings** and configure the delegated executor base URL and optional bearer token when you plan to use delegated mode.
+4. Refresh capabilities to confirm the delegated backend sees `nmap`, `ncat`, and `nping`, and use **Refresh local snapshot** to review stock-device limits.
 5. Build a profile in **Builder** using:
    - targets,
    - tool selection,
@@ -227,7 +256,7 @@ export NPING_BINARY="nping"
    - extra expert arguments,
    - execution mode,
    - optional recurring schedule.
-6. Review the live effective-argument preview, command preview, and execution-guidance card to see whether the profile is Android-local compatible or should route remotely.
+6. Review the live effective-argument preview, command preview, and execution-guidance card to see whether the profile is Android-local compatible or should route to a delegated executor.
 7. Save the profile and run it manually or let automation trigger it.
 8. Inspect recent host/endpoint activity and port-change alerts in **Dashboard**.
 9. Inspect status, logs, parsed findings, run-to-run deltas, and request/executor audit metadata in **History**.
@@ -239,7 +268,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 
 ### Current parsing behavior
 - **Nmap**:
-  - prefers structured XML output when the remote executor provides it,
+  - prefers structured XML output when the delegated executor provides it,
   - falls back to heuristic stdout parsing when XML is unavailable,
   - also parses the Android-local phase-A TCP connect report format into the same saved summary model,
   - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, and completion duration.
@@ -256,7 +285,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 - Non-Nmap tools currently keep generic delta reporting only.
 
 ### Important limitation
-- XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
+- XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the delegated executor actually returning intact XML within capture limits.
 - The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
 - Android-local phase-A output is intentionally compatibility-oriented and conservative. It is useful for connect-style visibility, not a claim of raw-packet Nmap parity.
 - Android-local UDP no-response results remain inherently inconclusive on stock Android because the app does not have full raw ICMP visibility.
@@ -266,7 +295,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 
 ## Command safety policy
 
-This project allows expert-style arguments, but it still blocks a narrow set of dangerous options on the remote executor. It also uses pre-run execution guidance in the Android builder to surface route assumptions and privilege-sensitive scan caveats before the operator launches a profile.
+This project allows expert-style arguments, but it still blocks a narrow set of dangerous options on the delegated executor. It also uses pre-run execution guidance in the Android builder to surface route assumptions and privilege-sensitive scan caveats before the operator launches a profile.
 
 ### Blocked examples
 - Nmap output file flags such as `-o*`
@@ -282,10 +311,12 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
    - curated application-layer detectors such as HTTP, TLS, SSH, and banner-oriented protocols
 2. Android-local phase-C fingerprint inference
    - evidence-based OS-family inference clearly labeled as Android-local inference rather than Nmap `-O`
-3. richer Nmap result modeling using structured output formats where feasible
-4. optional authenticated multi-user remote executor governance beyond the current single-token deployment model
-5. deeper remote executor observability such as richer backend metrics/retention controls around audit logs
-6. local-vs-remote capability detection and policy UX refinement
+3. delegated LAN-agent support
+   - executor-node registration, capability reporting, and private-topology-aware routing for user-controlled LAN agents
+4. richer Nmap result modeling using structured output formats where feasible
+5. optional authenticated multi-user delegated-executor governance beyond the current single-token deployment model
+6. deeper delegated-executor observability such as richer backend metrics/retention controls around audit logs
+7. executor-policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
 
 ## Verification status
 

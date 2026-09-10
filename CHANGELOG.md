@@ -90,6 +90,9 @@ The format is intentionally simple and incremental so each agent session can app
 - Added shared Android-local execution planning for bounded TCP connect scans, single-target TCP session probes, and bounded TCP-connect/UDP timing probes.
 - Added local capability snapshot reporting in the Android UI, including active-network visibility and local execution limits.
 - Updated builder execution guidance so local-vs-remote routing now considers actual Android-local compatibility rather than treating local execution as globally unavailable.
+- Added shared executor capability-profile models covering executor kind, transport, feature matrix, and execution limits.
+- Added delegated-executor capability profile publishing on the remote backend and standardized profile rendering in the Android UI.
+- Updated execution guidance to surface the likely executor node, not just the likely route.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

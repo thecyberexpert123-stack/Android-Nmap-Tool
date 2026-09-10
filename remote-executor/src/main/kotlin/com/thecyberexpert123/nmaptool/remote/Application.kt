@@ -6,6 +6,7 @@ import com.thecyberexpert123.nmaptool.contract.CommandSafetyPolicy
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
 import com.thecyberexpert123.nmaptool.contract.RunStatus
+import com.thecyberexpert123.nmaptool.contract.toExecutorCapabilityProfile
 import com.thecyberexpert123.nmaptool.contract.TargetValidator
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationRequest
 import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
@@ -313,12 +314,14 @@ class RemoteExecutionEngine(
         val nmapAvailable = isExecutableAvailable(config.nmapBinary)
         val ncatAvailable = isExecutableAvailable(config.ncatBinary)
         val npingAvailable = isExecutableAvailable(config.npingBinary)
-        return RemoteCapabilitiesResponse(
+        val privileged = detectPrivileged()
+        val requiresAuthentication = config.bearerToken.orEmpty().isNotBlank()
+        val response = RemoteCapabilitiesResponse(
             nmapAvailable = nmapAvailable,
             ncatAvailable = ncatAvailable,
             npingAvailable = npingAvailable,
-            privileged = detectPrivileged(),
-            requiresAuthentication = config.bearerToken.orEmpty().isNotBlank(),
+            privileged = privileged,
+            requiresAuthentication = requiresAuthentication,
             maxTargetsPerRequest = 64,
             maxArgumentsPerRequest = 128,
             outputCaptureLimitBytes = config.maxOutputBytes,
@@ -337,6 +340,7 @@ class RemoteExecutionEngine(
             auditLoggingEnabled = config.auditLogPath != null,
             maxConcurrentExecutions = config.maxConcurrentExecutions,
         )
+        return response.copy(executorProfile = response.toExecutorCapabilityProfile())
     }
 
     suspend fun execute(requestId: String, request: ToolInvocationRequest): ToolInvocationResponse = withContext(Dispatchers.IO) {

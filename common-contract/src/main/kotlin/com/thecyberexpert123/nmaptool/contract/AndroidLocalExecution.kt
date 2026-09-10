@@ -151,7 +151,7 @@ object AndroidLocalExecutionPlanner {
                     }
                     val totalProbes = plan.ports.size * targets.size
                     if (totalProbes > capabilities.maxTotalProbes) {
-                        blockers += "Android-local mode limits each run to ${capabilities.maxTotalProbes} total socket probes; reduce targets or ports, or use the remote executor."
+                        blockers += "Android-local mode limits each run to ${capabilities.maxTotalProbes} total socket probes; reduce targets or ports, or use a delegated executor."
                     }
                     if (!plan.skipHostDiscovery) {
                         warnings += "Without -Pn, Android-local mode still relies on connect-based reachability inference instead of raw ICMP/ARP host discovery."
@@ -260,11 +260,11 @@ object AndroidLocalExecutionPlanner {
                     }
                 }
 
-                argument == "-sV" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sV service detection. Use the remote executor for real Nmap service/version probing.")
-                argument == "-sC" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sC default scripts. Use the remote executor for NSE/script execution.")
-                argument == "-O" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -O OS detection parity. Use the remote executor for real Nmap OS fingerprinting.")
-                argument == "--traceroute" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support traceroute. Use the remote executor when traceroute is required.")
-                argument == "--script" || argument.startsWith("--script=") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support NSE script selection. Use the remote executor for script-backed scans.")
+                argument == "-sV" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sV service detection. Use a delegated executor for real Nmap service/version probing.")
+                argument == "-sC" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -sC default scripts. Use a delegated executor for NSE/script execution.")
+                argument == "-O" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support -O OS detection parity. Use a delegated executor for real Nmap OS fingerprinting.")
+                argument == "--traceroute" -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support traceroute. Use a delegated executor when traceroute is required.")
+                argument == "--script" || argument.startsWith("--script=") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support NSE script selection. Use a delegated executor for script-backed scans.")
                 argument in androidLocalNmapRawFlags -> issues += ValidationIssue("arguments[$index]", "$argument requires lower-level/raw packet behavior that stock Android app execution does not provide.")
                 argument.startsWith("-") -> issues += ValidationIssue("arguments[$index]", "Android-local phase-A Nmap mode does not support option $argument.")
                 else -> issues += ValidationIssue("arguments[$index]", "Unexpected positional token in Android-local Nmap arguments: $argument")
