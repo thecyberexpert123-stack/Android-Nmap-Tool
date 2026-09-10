@@ -1,0 +1,335 @@
+package com.thecyberexpert123.androidnmap.data
+
+import com.thecyberexpert123.androidnmap.execution.LocalToolExecutor
+import com.thecyberexpert123.androidnmap.execution.RemoteExecutorClient
+import com.thecyberexpert123.androidnmap.settings.RemoteEndpointSettings
+import com.thecyberexpert123.androidnmap.settings.RemoteSettingsStore
+import com.thecyberexpert123.nmaptool.contract.CommandPreview
+import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
+import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
+import com.thecyberexpert123.nmaptool.contract.InvocationFactory
+import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
+import com.thecyberexpert123.nmaptool.contract.RunStatus
+import com.thecyberexpert123.nmaptool.contract.RunTrigger
+import com.thecyberexpert123.nmaptool.contract.ToolInvocationResponse
+import com.thecyberexpert123.nmaptool.contract.ToolType
+import com.thecyberexpert123.nmaptool.contract.ValidationIssue
+import com.thecyberexpert123.nmaptool.contract.ValidationResult
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import java.net.URI
+import java.util.UUID
+
+private const val MAX_TEXT_SNAPSHOT = 120_000
+
+data class EditableScanProfile(
+    val id: String? = null,
+    val name: String = "",
+    val tool: ToolType = ToolType.NMAP,
+    val executionPreference: ExecutionPreference = ExecutionPreference.AUTO,
+    val rawTargets: String = "",
+    val rawArguments: String = "",
+    val notes: String = "",
+)
+
+data class ScanProfileSummary(
+    val id: String,
+    val name: String,
+    val tool: ToolType,
+    val executionPreference: ExecutionPreference,
+    val targetSummary: String,
+    val argumentsPreview: String,
+    val updatedAtEpochMillis: Long,
+)
+
+data class AutomationScheduleSummary(
+    val profileId: String,
+    val profileName: String,
+    val repeatMinutes: Long,
+    val requireUnmeteredNetwork: Boolean,
+    val enabled: Boolean,
+)
+
+data class ScanRunSummary(
+    val id: String,
+    val profileId: String?,
+    val profileName: String,
+    val tool: ToolType,
+    val route: ExecutionRoute,
+    val status: RunStatus,
+    val trigger: RunTrigger,
+    val commandPreview: String,
+    val exitCode: Int?,
+    val stdout: String,
+    val stderr: String,
+    val message: String,
+    val startedAtEpochMillis: Long,
+    val finishedAtEpochMillis: Long,
+)
+
+class DefaultScanRepository(
+    private val profileDao: ScanProfileDao,
+    private val scheduleDao: AutomationScheduleDao,
+    private val runDao: ScanRunDao,
+    private val remoteSettingsStore: RemoteSettingsStore,
+    private val remoteExecutorClient: RemoteExecutorClient,
+    private val localToolExecutor: LocalToolExecutor,
+) {
+    fun observeProfiles(): Flow<List<ScanProfileSummary>> =
+        profileDao.observeAll().map { profiles ->
+            profiles.map { entity ->
+                ScanProfileSummary(
+                    id = entity.id,
+                    name = entity.name,
+                    tool = ToolType.valueOf(entity.toolType),
+                    executionPreference = ExecutionPreference.valueOf(entity.executionPreference),
+                    targetSummary = entity.rawTargets.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { entity.rawTargets },
+                    argumentsPreview = entity.rawArguments,
+                    updatedAtEpochMillis = entity.updatedAtEpochMillis,
+                )
+            }
+        }
+
+    fun observeSchedules(): Flow<List<AutomationScheduleSummary>> =
+        scheduleDao.observeAll().map { schedules ->
+            val summaries = mutableListOf<AutomationScheduleSummary>()
+            for (schedule in schedules) {
+                val profile = profileDao.getById(schedule.profileId) ?: continue
+                summaries += AutomationScheduleSummary(
+                    profileId = schedule.profileId,
+                    profileName = profile.name,
+                    repeatMinutes = schedule.repeatMinutes,
+                    requireUnmeteredNetwork = schedule.requireUnmeteredNetwork,
+                    enabled = schedule.enabled,
+                )
+            }
+            summaries
+        }
+
+    fun observeRuns(): Flow<List<ScanRunSummary>> =
+        runDao.observeRecent().map { runs ->
+            runs.map { entity ->
+                ScanRunSummary(
+                    id = entity.id,
+                    profileId = entity.profileId,
+                    profileName = entity.profileName,
+                    tool = ToolType.valueOf(entity.toolType),
+                    route = ExecutionRoute.valueOf(entity.route),
+                    status = RunStatus.valueOf(entity.status),
+                    trigger = RunTrigger.valueOf(entity.triggerSource),
+                    commandPreview = entity.commandPreview,
+                    exitCode = entity.exitCode,
+                    stdout = entity.stdout,
+                    stderr = entity.stderr,
+                    message = entity.message,
+                    startedAtEpochMillis = entity.startedAtEpochMillis,
+                    finishedAtEpochMillis = entity.finishedAtEpochMillis,
+                )
+            }
+        }
+
+    suspend fun loadEditableProfile(profileId: String): EditableScanProfile? {
+        val profile = profileDao.getById(profileId) ?: return null
+        return EditableScanProfile(
+            id = profile.id,
+            name = profile.name,
+            tool = ToolType.valueOf(profile.toolType),
+            executionPreference = ExecutionPreference.valueOf(profile.executionPreference),
+            rawTargets = profile.rawTargets,
+            rawArguments = profile.rawArguments,
+            notes = profile.notes,
+        )
+    }
+
+    suspend fun loadSchedule(profileId: String): AutomationScheduleEntity? = scheduleDao.getByProfileId(profileId)
+
+    suspend fun saveProfile(profile: EditableScanProfile): ValidationResult<String> {
+        val validation = InvocationFactory.fromDraft(
+            profileName = profile.name,
+            tool = profile.tool,
+            executionPreference = profile.executionPreference,
+            rawTargets = profile.rawTargets,
+            rawArguments = profile.rawArguments,
+            notes = profile.notes,
+            requestedBy = RunTrigger.MANUAL,
+        )
+        if (!validation.isValid) {
+            return ValidationResult.failure(validation.issues)
+        }
+
+        val now = System.currentTimeMillis()
+        val id = profile.id ?: UUID.randomUUID().toString()
+        val existing = profile.id?.let(profileDao::getById)
+        profileDao.upsert(
+            ScanProfileEntity(
+                id = id,
+                name = profile.name.trim(),
+                toolType = profile.tool.name,
+                executionPreference = profile.executionPreference.name,
+                rawTargets = profile.rawTargets.trim(),
+                rawArguments = profile.rawArguments.trim(),
+                notes = profile.notes.trim(),
+                createdAtEpochMillis = existing?.createdAtEpochMillis ?: now,
+                updatedAtEpochMillis = now,
+            ),
+        )
+        return ValidationResult.success(id)
+    }
+
+    fun readRemoteSettings(): RemoteEndpointSettings = remoteSettingsStore.read()
+
+    fun saveRemoteSettings(settings: RemoteEndpointSettings): ValidationResult<Unit> {
+        val normalizedUrl = settings.baseUrl.trim()
+        if (normalizedUrl.isNotBlank()) {
+            val issues = validateRemoteEndpoint(normalizedUrl)
+            if (issues.isNotEmpty()) {
+                return ValidationResult.failure(issues)
+            }
+        }
+        remoteSettingsStore.save(settings.copy(baseUrl = normalizedUrl))
+        return ValidationResult.success(Unit)
+    }
+
+    suspend fun fetchRemoteCapabilities(settings: RemoteEndpointSettings = remoteSettingsStore.read()): Result<RemoteCapabilitiesResponse> {
+        if (settings.baseUrl.isBlank()) {
+            return Result.failure(IllegalStateException("Set a remote executor base URL before requesting capabilities."))
+        }
+        return remoteExecutorClient.fetchCapabilities(settings)
+    }
+
+    suspend fun executeProfile(profileId: String, trigger: RunTrigger): ToolInvocationResponse {
+        val profile = profileDao.getById(profileId)
+            ?: return ToolInvocationResponse(
+                route = ExecutionRoute.BLOCKED,
+                status = RunStatus.BLOCKED,
+                commandPreview = "",
+                stdout = "",
+                stderr = "Profile not found.",
+                startedAtEpochMillis = System.currentTimeMillis(),
+                finishedAtEpochMillis = System.currentTimeMillis(),
+                message = "Profile not found.",
+            )
+
+        val tool = ToolType.valueOf(profile.toolType)
+        val validation = InvocationFactory.fromDraft(
+            profileName = profile.name,
+            tool = tool,
+            executionPreference = ExecutionPreference.valueOf(profile.executionPreference),
+            rawTargets = profile.rawTargets,
+            rawArguments = profile.rawArguments,
+            notes = profile.notes,
+            requestedBy = trigger,
+        )
+        val response = if (!validation.isValid) {
+            val message = validation.issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
+            ToolInvocationResponse(
+                route = ExecutionRoute.BLOCKED,
+                status = RunStatus.BLOCKED,
+                commandPreview = CommandPreview.render(tool, emptyList(), emptyList()),
+                stdout = "",
+                stderr = message,
+                startedAtEpochMillis = System.currentTimeMillis(),
+                finishedAtEpochMillis = System.currentTimeMillis(),
+                message = "Profile validation failed.",
+            )
+        } else {
+            val request = validation.value!!.request
+            val localDecision = localToolExecutor.inspect(request)
+            val remoteSettings = remoteSettingsStore.read()
+            when (request.executionPreference) {
+                ExecutionPreference.LOCAL_ONLY -> localToolExecutor.execute(request)
+                ExecutionPreference.REMOTE_ONLY -> {
+                    if (remoteSettings.baseUrl.isBlank()) {
+                        buildFailureResponse(
+                            route = ExecutionRoute.BLOCKED,
+                            commandPreview = validation.value.commandPreview,
+                            message = "Remote execution was requested, but no remote base URL is configured.",
+                        )
+                    } else {
+                        remoteExecutorClient.execute(remoteSettings, request)
+                    }
+                }
+
+                ExecutionPreference.AUTO -> {
+                    if (localDecision.canExecute) {
+                        localToolExecutor.execute(request)
+                    } else if (remoteSettings.baseUrl.isNotBlank()) {
+                        remoteExecutorClient.execute(remoteSettings, request)
+                    } else {
+                        buildFailureResponse(
+                            route = ExecutionRoute.BLOCKED,
+                            commandPreview = validation.value.commandPreview,
+                            message = localDecision.reason,
+                        )
+                    }
+                }
+            }
+        }
+
+        return persistAndReturn(
+            response = response,
+            profileId = profile.id,
+            profileName = profile.name,
+            tool = tool,
+            trigger = trigger,
+        )
+    }
+
+    private suspend fun persistAndReturn(
+        response: ToolInvocationResponse,
+        profileId: String?,
+        profileName: String,
+        tool: ToolType,
+        trigger: RunTrigger,
+    ): ToolInvocationResponse {
+        runDao.upsert(
+            ScanRunEntity(
+                id = UUID.randomUUID().toString(),
+                profileId = profileId,
+                profileName = profileName,
+                toolType = tool.name,
+                route = response.route.name,
+                status = response.status.name,
+                triggerSource = trigger.name,
+                commandPreview = response.commandPreview,
+                exitCode = response.exitCode,
+                stdout = response.stdout.take(MAX_TEXT_SNAPSHOT),
+                stderr = response.stderr.take(MAX_TEXT_SNAPSHOT),
+                message = response.message.take(4_000),
+                startedAtEpochMillis = response.startedAtEpochMillis,
+                finishedAtEpochMillis = response.finishedAtEpochMillis,
+            ),
+        )
+        return response
+    }
+
+    private fun buildFailureResponse(
+        route: ExecutionRoute,
+        commandPreview: String,
+        message: String,
+    ): ToolInvocationResponse = ToolInvocationResponse(
+        route = route,
+        status = RunStatus.BLOCKED,
+        commandPreview = commandPreview,
+        stdout = "",
+        stderr = message,
+        startedAtEpochMillis = System.currentTimeMillis(),
+        finishedAtEpochMillis = System.currentTimeMillis(),
+        message = message,
+    )
+
+    private fun validateRemoteEndpoint(baseUrl: String): List<ValidationIssue> {
+        val issues = mutableListOf<ValidationIssue>()
+        runCatching {
+            val uri = URI(baseUrl)
+            require(uri.scheme == "http" || uri.scheme == "https")
+            require(!uri.host.isNullOrBlank())
+        }.onFailure {
+            issues += ValidationIssue(
+                field = "baseUrl",
+                message = "Remote executor URL must use http/https and include a host.",
+            )
+        }
+        return issues
+    }
+}

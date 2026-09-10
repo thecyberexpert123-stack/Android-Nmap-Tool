@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nmap_blue">#0B5C8E</color>
+    <color name="nmap_teal">#1FA6A3</color>
+    <color name="nmap_navy">#0F172A</color>
+    <color name="nmap_surface">#F5F7FA</color>
+</resources>
