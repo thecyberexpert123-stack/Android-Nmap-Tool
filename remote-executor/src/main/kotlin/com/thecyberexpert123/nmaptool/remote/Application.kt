@@ -267,6 +267,9 @@ class RemoteExecutionEngine(
                         ?.takeUnless { it.truncated }
                         ?.content
                         ?.takeIf(String::isNotBlank),
+                    stdoutTruncated = normalOutputCapture?.truncated ?: stdoutCapture.truncated,
+                    stderrTruncated = stderrCapture.truncated,
+                    nmapXmlOutputTruncated = xmlOutputCapture?.truncated == true,
                 )
             }
 
@@ -285,6 +288,9 @@ class RemoteExecutionEngine(
                     else -> "Remote execution finished with a non-zero exit code."
                 },
                 nmapXmlOutput = result.nmapXmlOutput,
+                stdoutTruncated = result.stdoutTruncated,
+                stderrTruncated = result.stderrTruncated,
+                nmapXmlOutputTruncated = result.nmapXmlOutputTruncated,
             )
         } finally {
             structuredFiles?.deleteQuietly()
@@ -354,6 +360,9 @@ class RemoteExecutionEngine(
         val stdout: String,
         val stderr: String,
         val nmapXmlOutput: String? = null,
+        val stdoutTruncated: Boolean = false,
+        val stderrTruncated: Boolean = false,
+        val nmapXmlOutputTruncated: Boolean = false,
     )
 
     private data class StructuredOutputFiles(

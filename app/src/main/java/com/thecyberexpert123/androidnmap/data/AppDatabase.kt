@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.Flow
         AutomationScheduleEntity::class,
         ScanRunEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -30,6 +30,14 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE scan_runs ADD COLUMN nmapXmlOutput TEXT")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE scan_runs ADD COLUMN stdoutTruncated INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE scan_runs ADD COLUMN stderrTruncated INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE scan_runs ADD COLUMN nmapXmlOutputTruncated INTEGER NOT NULL DEFAULT 0")
             }
         }
     }
@@ -77,6 +85,9 @@ data class ScanRunEntity(
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
     val nmapXmlOutput: String?,
+    val stdoutTruncated: Boolean,
+    val stderrTruncated: Boolean,
+    val nmapXmlOutputTruncated: Boolean,
 )
 
 @Dao

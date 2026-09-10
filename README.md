@@ -99,12 +99,14 @@ This project chooses correctness over false claims:
 - WorkManager-based recurring scan scheduling
 - Remote executor settings with **Android Keystore-encrypted bearer token storage**
 - Capability refresh from the backend
+- Automatic capability re-check after saving remote executor settings
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 - Dashboard insight cards for:
   - observed hosts from parsed findings
   - open endpoints seen in recent runs
   - recent port-change alerts
+  - scheduled-profile and recent-failure visibility
 - Shared **result parsing** for richer summaries:
   - Nmap host/up/open-port extraction from standard output
   - Nping packet and RTT summary extraction
@@ -112,6 +114,8 @@ This project chooses correctness over false claims:
 - Parsed **host/port change detection** for repeated Nmap runs:
   - newly open endpoints since the previous run
   - previously open endpoints no longer present
+- Profile and automation views now surface saved schedule cadence and the most recent run outcome for faster operator triage.
+- Run history now surfaces parse provenance, execution duration, observed-host counts, and explicit capture-truncation warnings.
 
 ### Explicit current limitation
 - The Android app's **local executor is intentionally disabled in this baseline**.
@@ -134,6 +138,7 @@ This project chooses correctness over false claims:
   - executor-side file input indirection
   - ncat command execution modes
 - for `nmap` requests, the executor can capture **normal output plus structured XML output** using executor-managed temporary files for programmatic parsing
+- returns explicit truncation metadata for stdout, stderr, and structured XML captures so the Android client can warn about incomplete results
 - optional bearer token protection via `NMAP_EXECUTOR_TOKEN`
 - optional target-scope restriction via `ALLOWED_TARGET_REGEXES`
 - bounded output capture via `MAX_OUTPUT_BYTES`
@@ -149,7 +154,7 @@ This project chooses correctness over false claims:
 | `NCAT_BINARY` | Path or command name for `ncat` | `ncat` |
 | `NPING_BINARY` | Path or command name for `nping` | `nping` |
 | `EXECUTION_TIMEOUT_SECONDS` | Maximum runtime per request | `900` |
-| `MAX_OUTPUT_BYTES` | Per-stream capture limit for stdout/stderr | `262144` |
+| `MAX_OUTPUT_BYTES` | Per-stream capture limit for stdout/stderr and executor-managed Nmap output files | `262144` |
 | `ALLOWED_TARGET_REGEXES` | Optional semicolon-separated regex allowlist for targets | unset |
 
 ## Build requirements
@@ -214,6 +219,8 @@ The app now derives lightweight summaries from captured tool output to make repe
   - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, and completion duration.
 - **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
 - **Ncat**: surfaces connection target and first output line when present.
+- Each parsed run now records whether the summary came from structured Nmap XML, heuristic text parsing, or no parseable captured content.
+- Capture truncation is reported explicitly so operators can distinguish “no findings” from “possibly incomplete findings due to capture limits.”
 
 ### Change detection behavior
 - For repeated **Nmap** runs of the same saved profile, the app compares parsed open endpoints between the latest run and the previous run.
@@ -224,6 +231,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 
 ### Important limitation
 - XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the remote executor actually returning intact XML within capture limits.
+- The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
 - Non-Nmap tool summaries and fallback text parsing remain **heuristic**, not a claim of complete semantic understanding of every possible upstream output format or localization variant.
 
 ## Command safety policy

@@ -20,6 +20,7 @@ import com.thecyberexpert123.nmaptool.contract.ToolType
 import com.thecyberexpert123.nmaptool.contract.ValidationIssue
 import com.thecyberexpert123.nmaptool.contract.ValidationResult
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import java.net.URI
 import java.security.MessageDigest
@@ -45,6 +46,11 @@ data class ScanProfileSummary(
     val targetSummary: String,
     val argumentsPreview: String,
     val updatedAtEpochMillis: Long,
+    val scheduleEnabled: Boolean,
+    val scheduleRepeatMinutes: Long?,
+    val lastRunStatus: RunStatus?,
+    val lastRunRoute: ExecutionRoute?,
+    val lastRunStartedAtEpochMillis: Long?,
 )
 
 data class AutomationScheduleSummary(
@@ -53,6 +59,8 @@ data class AutomationScheduleSummary(
     val repeatMinutes: Long,
     val requireUnmeteredNetwork: Boolean,
     val enabled: Boolean,
+    val lastRunStatus: RunStatus?,
+    val lastRunStartedAtEpochMillis: Long?,
 )
 
 enum class RunChangeKind {
@@ -76,12 +84,18 @@ data class ScanRunSummary(
     val message: String,
     val startedAtEpochMillis: Long,
     val finishedAtEpochMillis: Long,
+    val stdoutTruncated: Boolean,
+    val stderrTruncated: Boolean,
+    val nmapXmlOutputTruncated: Boolean,
     val changeKind: RunChangeKind,
     val changeSummary: String,
     val parsedSummary: ToolResultSummary,
     val newOpenPorts: List<PortFinding>,
     val closedPorts: List<PortFinding>,
-)
+) {
+    val durationMillis: Long
+        get() = (finishedAtEpochMillis - startedAtEpochMillis).coerceAtLeast(0L)
+}
 
 class DefaultScanRepository(
     private val profileDao: ScanProfileDao,
@@ -92,8 +106,19 @@ class DefaultScanRepository(
     private val localToolExecutor: LocalToolExecutor,
 ) {
     fun observeProfiles(): Flow<List<ScanProfileSummary>> =
-        profileDao.observeAll().map { profiles ->
+        combine(
+            profileDao.observeAll(),
+            scheduleDao.observeAll(),
+            runDao.observeRecent(),
+        ) { profiles, schedules, runs ->
+            val schedulesByProfileId = schedules.associateBy { it.profileId }
+            val latestRunsByProfileId = runs
+                .filter { it.profileId != null }
+                .groupBy { it.profileId!! }
+                .mapValues { (_, groupedRuns) -> groupedRuns.maxByOrNull { it.startedAtEpochMillis } }
             profiles.map { entity ->
+                val latestRun = latestRunsByProfileId[entity.id]
+                val schedule = schedulesByProfileId[entity.id]
                 ScanProfileSummary(
                     id = entity.id,
                     name = entity.name,
@@ -102,24 +127,39 @@ class DefaultScanRepository(
                     targetSummary = entity.rawTargets.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { entity.rawTargets },
                     argumentsPreview = entity.rawArguments,
                     updatedAtEpochMillis = entity.updatedAtEpochMillis,
+                    scheduleEnabled = schedule?.enabled == true,
+                    scheduleRepeatMinutes = schedule?.repeatMinutes,
+                    lastRunStatus = latestRun?.status?.let(RunStatus::valueOf),
+                    lastRunRoute = latestRun?.route?.let(ExecutionRoute::valueOf),
+                    lastRunStartedAtEpochMillis = latestRun?.startedAtEpochMillis,
                 )
             }
         }
 
     fun observeSchedules(): Flow<List<AutomationScheduleSummary>> =
-        scheduleDao.observeAll().map { schedules ->
-            val summaries = mutableListOf<AutomationScheduleSummary>()
-            for (schedule in schedules) {
-                val profile = profileDao.getById(schedule.profileId) ?: continue
-                summaries += AutomationScheduleSummary(
+        combine(
+            scheduleDao.observeAll(),
+            profileDao.observeAll(),
+            runDao.observeRecent(),
+        ) { schedules, profiles, runs ->
+            val profilesById = profiles.associateBy { it.id }
+            val latestRunsByProfileId = runs
+                .filter { it.profileId != null }
+                .groupBy { it.profileId!! }
+                .mapValues { (_, groupedRuns) -> groupedRuns.maxByOrNull { it.startedAtEpochMillis } }
+            schedules.mapNotNull { schedule ->
+                val profile = profilesById[schedule.profileId] ?: return@mapNotNull null
+                val latestRun = latestRunsByProfileId[schedule.profileId]
+                AutomationScheduleSummary(
                     profileId = schedule.profileId,
                     profileName = profile.name,
                     repeatMinutes = schedule.repeatMinutes,
                     requireUnmeteredNetwork = schedule.requireUnmeteredNetwork,
                     enabled = schedule.enabled,
+                    lastRunStatus = latestRun?.status?.let(RunStatus::valueOf),
+                    lastRunStartedAtEpochMillis = latestRun?.startedAtEpochMillis,
                 )
             }
-            summaries
         }
 
     fun observeRuns(): Flow<List<ScanRunSummary>> =
@@ -138,6 +178,9 @@ class DefaultScanRepository(
                         stdout = entity.stdout,
                         stderr = entity.stderr,
                         nmapXmlOutput = entity.nmapXmlOutput,
+                        stdoutTruncated = entity.stdoutTruncated,
+                        stderrTruncated = entity.stderrTruncated,
+                        nmapXmlOutputTruncated = entity.nmapXmlOutputTruncated,
                     ),
                 )
             }
@@ -160,6 +203,9 @@ class DefaultScanRepository(
                     message = entity.message,
                     startedAtEpochMillis = entity.startedAtEpochMillis,
                     finishedAtEpochMillis = entity.finishedAtEpochMillis,
+                    stdoutTruncated = entity.stdoutTruncated,
+                    stderrTruncated = entity.stderrTruncated,
+                    nmapXmlOutputTruncated = entity.nmapXmlOutputTruncated,
                     changeKind = change.kind,
                     changeSummary = change.summary,
                     parsedSummary = parsedRun.parsedSummary,
@@ -340,6 +386,9 @@ class DefaultScanRepository(
                 startedAtEpochMillis = response.startedAtEpochMillis,
                 finishedAtEpochMillis = response.finishedAtEpochMillis,
                 nmapXmlOutput = response.nmapXmlOutput?.take(MAX_TEXT_SNAPSHOT),
+                stdoutTruncated = response.stdoutTruncated,
+                stderrTruncated = response.stderrTruncated,
+                nmapXmlOutputTruncated = response.nmapXmlOutputTruncated,
             ),
         )
         return response
@@ -413,7 +462,10 @@ class DefaultScanRepository(
         if (
             fingerprint(previous.entity.stdout) != fingerprint(current.entity.stdout) ||
             fingerprint(previous.entity.stderr) != fingerprint(current.entity.stderr) ||
-            fingerprint(previous.entity.nmapXmlOutput.orEmpty()) != fingerprint(current.entity.nmapXmlOutput.orEmpty())
+            fingerprint(previous.entity.nmapXmlOutput.orEmpty()) != fingerprint(current.entity.nmapXmlOutput.orEmpty()) ||
+            previous.entity.stdoutTruncated != current.entity.stdoutTruncated ||
+            previous.entity.stderrTruncated != current.entity.stderrTruncated ||
+            previous.entity.nmapXmlOutputTruncated != current.entity.nmapXmlOutputTruncated
         ) {
             deltas += "captured output changed"
         }

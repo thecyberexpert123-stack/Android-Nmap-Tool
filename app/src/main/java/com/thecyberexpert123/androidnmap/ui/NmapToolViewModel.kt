@@ -292,35 +292,57 @@ class NmapToolViewModel(
 
     fun saveRemoteSettings() {
         viewModelScope.launch {
-            val result = repository.saveRemoteSettings(
-                RemoteEndpointSettings(
-                    baseUrl = remoteSettings.value.baseUrl,
-                    bearerToken = remoteSettings.value.bearerToken,
-                ),
+            val settings = RemoteEndpointSettings(
+                baseUrl = remoteSettings.value.baseUrl,
+                bearerToken = remoteSettings.value.bearerToken,
             )
-            _message.value = if (result.isValid) {
-                "Remote executor settings saved securely on-device."
+            val result = repository.saveRemoteSettings(settings)
+            if (result.isValid) {
+                val capabilityRefreshError = if (settings.baseUrl.isNotBlank()) {
+                    refreshCapabilitiesForSettings(settings)
+                } else {
+                    _capabilityState.value = CapabilityUiState()
+                    null
+                }
+                _message.value = capabilityRefreshError?.let {
+                    "Remote executor settings saved securely on-device, but capability refresh failed."
+                } ?: "Remote executor settings saved securely on-device."
             } else {
-                result.issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
+                _message.value = result.issues.joinToString(separator = "\n") { "${it.field}: ${it.message}" }
             }
         }
     }
 
     fun refreshCapabilities() {
         viewModelScope.launch {
-            _capabilityState.value = CapabilityUiState(loading = true)
-            repository.fetchRemoteCapabilities(
-                settings = RemoteEndpointSettings(
+            refreshCapabilitiesForSettings(
+                RemoteEndpointSettings(
                     baseUrl = remoteSettings.value.baseUrl,
                     bearerToken = remoteSettings.value.bearerToken,
                 ),
-            ).onSuccess { capabilities ->
-                _capabilityState.value = CapabilityUiState(capabilities = capabilities)
-            }.onFailure { error ->
-                _capabilityState.value = CapabilityUiState(error = error.message)
-                _message.value = error.message ?: "Failed to load remote capabilities."
-            }
+                publishMessageOnFailure = true,
+            )
         }
+    }
+
+    private suspend fun refreshCapabilitiesForSettings(
+        settings: RemoteEndpointSettings,
+        publishMessageOnFailure: Boolean = false,
+    ): String? {
+        _capabilityState.value = CapabilityUiState(loading = true)
+        var failureMessage: String? = null
+        repository.fetchRemoteCapabilities(settings)
+            .onSuccess { capabilities ->
+                _capabilityState.value = CapabilityUiState(capabilities = capabilities)
+            }
+            .onFailure { error ->
+                failureMessage = error.message ?: "Failed to load remote capabilities."
+                _capabilityState.value = CapabilityUiState(error = failureMessage)
+                if (publishMessageOnFailure) {
+                    _message.value = failureMessage
+                }
+            }
+        return failureMessage
     }
 
     private suspend fun persistCurrentDraft(showSuccessMessage: Boolean): String? {

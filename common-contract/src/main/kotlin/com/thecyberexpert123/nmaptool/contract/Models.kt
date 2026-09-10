@@ -40,6 +40,13 @@ enum class RunTrigger {
 }
 
 @Serializable
+enum class ResultParseSource {
+    STRUCTURED_NMAP_XML,
+    HEURISTIC_TEXT,
+    NONE,
+}
+
+@Serializable
 data class ToolInvocationRequest(
     val profileName: String,
     val tool: ToolType,
@@ -63,6 +70,9 @@ data class ToolInvocationResponse(
     val finishedAtEpochMillis: Long,
     val message: String = "",
     val nmapXmlOutput: String? = null,
+    val stdoutTruncated: Boolean = false,
+    val stderrTruncated: Boolean = false,
+    val nmapXmlOutputTruncated: Boolean = false,
 )
 
 @Serializable

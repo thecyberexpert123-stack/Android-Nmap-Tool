@@ -51,6 +51,8 @@ import com.thecyberexpert123.androidnmap.data.AutomationScheduleSummary
 import com.thecyberexpert123.androidnmap.data.RunChangeKind
 import com.thecyberexpert123.androidnmap.data.ScanProfileSummary
 import com.thecyberexpert123.androidnmap.data.ScanRunSummary
+import com.thecyberexpert123.nmaptool.contract.ResultParseSource
+import com.thecyberexpert123.nmaptool.contract.RunStatus
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.NmapTimingTemplate
 import com.thecyberexpert123.nmaptool.contract.PortFinding
@@ -125,6 +127,7 @@ fun NmapToolRoot(viewModel: NmapToolViewModel) {
                 profiles = profiles,
                 runs = runs,
                 schedules = schedules,
+                remoteSettings = remoteSettings,
                 capabilityState = capabilityState,
                 onNewScan = { selectedTabIndex = AppTab.BUILDER.ordinal },
                 onEditProfile = {
@@ -191,6 +194,7 @@ private fun DashboardScreen(
     profiles: List<ScanProfileSummary>,
     runs: List<ScanRunSummary>,
     schedules: List<AutomationScheduleSummary>,
+    remoteSettings: RemoteSettingsUiState,
     capabilityState: CapabilityUiState,
     onNewScan: () -> Unit,
     onEditProfile: (String) -> Unit,
@@ -218,6 +222,9 @@ private fun DashboardScreen(
         }
     }.take(8)
     val changedRuns = recentRuns.count { it.newOpenPorts.isNotEmpty() || it.closedPorts.isNotEmpty() }
+    val scheduledProfiles = profiles.count { it.scheduleEnabled }
+    val failedProfiles = profiles.count { it.lastRunStatus == RunStatus.FAILED }
+    val remoteConfigured = remoteSettings.baseUrl.isNotBlank()
 
     LazyColumn(
         modifier = Modifier
@@ -247,6 +254,16 @@ private fun DashboardScreen(
             }
         }
         item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MetricCard(title = "Scheduled profiles", value = scheduledProfiles.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Profiles with failed last run", value = failedProfiles.toString(), modifier = Modifier.weight(1f))
+                MetricCard(title = "Executor configured", value = if (remoteConfigured) "Yes" else "No", modifier = Modifier.weight(1f))
+            }
+        }
+        item {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Execution posture", style = MaterialTheme.typography.titleMedium)
@@ -254,6 +271,10 @@ private fun DashboardScreen(
                         text = capabilityState.capabilities?.advisory
                             ?: "Remote execution is the primary path for non-root Android, while local execution remains capability-gated.",
                     )
+                    Text(text = if (remoteConfigured) "Remote executor base URL is configured." else "Remote executor base URL is not configured yet.")
+                    capabilityState.error?.takeIf(String::isNotBlank)?.let { error ->
+                        Text(text = "Latest capability check error: $error", color = MaterialTheme.colorScheme.error)
+                    }
                     Text(
                         text = "Use Builder for structured Nmap controls, expert arguments, autonomous scheduling, and saved profiles.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -602,6 +623,12 @@ private fun AutomationScreen(
                     Text(text = schedule.profileName, style = MaterialTheme.typography.titleMedium)
                     Text(text = "Every ${schedule.repeatMinutes} minutes")
                     Text(text = if (schedule.requireUnmeteredNetwork) "Unmetered network required" else "Any connected network")
+                    schedule.lastRunStartedAtEpochMillis?.let { lastRunAt ->
+                        Text(
+                            text = "Last run: ${schedule.lastRunStatus?.name ?: "UNKNOWN"} • ${formatTimestamp(lastRunAt)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         TextButton(onClick = { onEditProfile(schedule.profileId) }) {
                             Text("Edit")
@@ -636,7 +663,7 @@ private fun SettingsScreen(
     ) {
         Text(text = "Remote executor settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Remote mode provides the honest path to broader Nmap functionality on modern non-root Android. The bearer token is stored encrypted with Android Keystore.",
+            text = "Remote mode provides the honest path to broader Nmap functionality on modern non-root Android. The bearer token is stored encrypted with Android Keystore. Saving settings also re-checks remote capabilities when a base URL is configured.",
         )
         OutlinedTextField(
             value = settingsState.baseUrl,
@@ -713,6 +740,20 @@ private fun ProfileCard(
             Text(text = profile.name, style = MaterialTheme.typography.titleMedium)
             Text(text = "${profile.tool.name} • ${profile.executionPreference.name.replace('_', ' ')}")
             Text(text = "Targets: ${profile.targetSummary}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                text = profile.scheduleRepeatMinutes?.let { minutes ->
+                    if (profile.scheduleEnabled) "Scheduled every $minutes minutes" else "Schedule saved but disabled"
+                } ?: "No recurring schedule",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            profile.lastRunStartedAtEpochMillis?.let { lastRunAt ->
+                val route = profile.lastRunRoute?.name ?: "UNKNOWN"
+                val status = profile.lastRunStatus?.name ?: "UNKNOWN"
+                Text(
+                    text = "Last run: $status via $route • ${formatTimestamp(lastRunAt)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (profile.argumentsPreview.isNotBlank()) {
                 Text(
                     text = profile.argumentsPreview,
@@ -763,6 +804,20 @@ private fun RunCard(run: ScanRunSummary) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(text = run.profileName, style = MaterialTheme.typography.titleMedium)
             Text(text = "${run.status.name} via ${run.route.name} • ${run.trigger.name}")
+            Text(
+                text = buildString {
+                    append("Parsed via ")
+                    append(formatParseSource(run.parsedSummary.parseSource))
+                    append(" • ")
+                    append(formatDuration(run.durationMillis))
+                    append(" • ")
+                    append(run.parsedSummary.observedHosts.size)
+                    append(" hosts • ")
+                    append(run.parsedSummary.portFindings.size)
+                    append(" endpoints")
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
             Card(colors = CardDefaults.cardColors(containerColor = changeContainerColor)) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -774,6 +829,20 @@ private fun RunCard(run: ScanRunSummary) {
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium,
                     )
+                }
+            }
+            if (run.parsedSummary.warnings.isNotEmpty()) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(text = "Capture / parsing warnings", style = MaterialTheme.typography.titleSmall)
+                        run.parsedSummary.warnings.forEach { warning ->
+                            Text(
+                                text = "• $warning",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
                 }
             }
             if (run.parsedSummary.highlights.isNotEmpty()) {
@@ -796,6 +865,12 @@ private fun RunCard(run: ScanRunSummary) {
                 PreviewCard(
                     title = "Previously open ports no longer present",
                     body = run.closedPorts.joinToString(separator = "\n", transform = ::formatFinding),
+                )
+            }
+            if (run.parsedSummary.observedHosts.isNotEmpty()) {
+                PreviewCard(
+                    title = "Observed hosts",
+                    body = run.parsedSummary.observedHosts.joinToString(separator = "\n"),
                 )
             }
             if (run.parsedSummary.portFindings.isNotEmpty()) {
@@ -900,6 +975,23 @@ private fun formatFinding(finding: PortFinding): String = buildString {
     if (finding.details.isNotBlank()) {
         append(" — ")
         append(finding.details)
+    }
+}
+
+private fun formatParseSource(source: ResultParseSource): String = when (source) {
+    ResultParseSource.STRUCTURED_NMAP_XML -> "structured Nmap XML"
+    ResultParseSource.HEURISTIC_TEXT -> "heuristic text parsing"
+    ResultParseSource.NONE -> "no parsed content"
+}
+
+private fun formatDuration(durationMillis: Long): String {
+    val totalSeconds = durationMillis / 1_000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return if (minutes > 0) {
+        "${minutes}m ${seconds}s"
+    } else {
+        "${seconds}s"
     }
 }
 

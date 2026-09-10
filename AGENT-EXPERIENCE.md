@@ -102,6 +102,8 @@ This document records development observations, constraints, trade-offs, and lea
 - Lightweight output parsing is useful, but it must be described honestly as heuristic unless the implementation is driven by a guaranteed structured output format.
 - Dashboard insights become much more valuable when they are derived from saved run history and explicit parsed deltas instead of invented status labels.
 - When a tool already has a documented structured output format, it is usually better engineering to capture and parse that format than to keep expanding fragile text heuristics. Nmap XML fits that pattern well.
+- Once structured parsing exists, it is also important to preserve **capture integrity metadata**. Otherwise the UI can overstate confidence in partial/truncated results.
+- Profile dashboards become more actionable when they combine configuration state, schedule cadence, and latest execution outcome instead of showing saved profiles as static objects.
 
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.

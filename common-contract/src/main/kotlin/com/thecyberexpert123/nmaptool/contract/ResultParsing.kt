@@ -19,7 +19,9 @@ private val ncatConnectedRegex = Regex("^(?:Ncat: )?Connected to (.+)$", RegexOp
 
 data class ToolResultSummary(
     val overview: String,
+    val parseSource: ResultParseSource = ResultParseSource.NONE,
     val highlights: List<String> = emptyList(),
+    val warnings: List<String> = emptyList(),
     val portFindings: List<PortFinding> = emptyList(),
     val observedHosts: List<String> = emptyList(),
 )
@@ -44,6 +46,9 @@ object ToolResultParser {
         stdout: String,
         stderr: String,
         nmapXmlOutput: String? = null,
+        stdoutTruncated: Boolean = false,
+        stderrTruncated: Boolean = false,
+        nmapXmlOutputTruncated: Boolean = false,
     ): ToolResultSummary = when (tool) {
         ToolType.NMAP -> parseNmap(
             status = status,
@@ -51,9 +56,26 @@ object ToolResultParser {
             stdout = stdout,
             stderr = stderr,
             nmapXmlOutput = nmapXmlOutput,
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = nmapXmlOutputTruncated,
         )
-        ToolType.NPING -> parseNping(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
-        ToolType.NCAT -> parseNcat(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
+        ToolType.NPING -> parseNping(
+            status = status,
+            exitCode = exitCode,
+            stdout = stdout,
+            stderr = stderr,
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+        )
+        ToolType.NCAT -> parseNcat(
+            status = status,
+            exitCode = exitCode,
+            stdout = stdout,
+            stderr = stderr,
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+        )
     }
 
     private fun parseNmap(
@@ -62,11 +84,33 @@ object ToolResultParser {
         stdout: String,
         stderr: String,
         nmapXmlOutput: String?,
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
+        nmapXmlOutputTruncated: Boolean,
     ): ToolResultSummary {
         val xmlSummary = nmapXmlOutput
             ?.takeIf { it.isNotBlank() }
-            ?.let { xml -> runCatching { parseNmapXml(status, exitCode, xml, stderr) }.getOrNull() }
-        return xmlSummary ?: parseNmapText(status = status, exitCode = exitCode, stdout = stdout, stderr = stderr)
+            ?.let { xml ->
+                runCatching {
+                    parseNmapXml(
+                        status = status,
+                        exitCode = exitCode,
+                        xmlOutput = xml,
+                        stderr = stderr,
+                        stdoutTruncated = stdoutTruncated,
+                        stderrTruncated = stderrTruncated,
+                    )
+                }.getOrNull()
+            }
+        return xmlSummary ?: parseNmapText(
+            status = status,
+            exitCode = exitCode,
+            stdout = stdout,
+            stderr = stderr,
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = nmapXmlOutputTruncated,
+        )
     }
 
     private fun parseNmapText(
@@ -74,6 +118,9 @@ object ToolResultParser {
         exitCode: Int?,
         stdout: String,
         stderr: String,
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
+        nmapXmlOutputTruncated: Boolean,
     ): ToolResultSummary {
         val lines = stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         var currentHost: String? = null
@@ -82,6 +129,7 @@ object ToolResultParser {
         var scannedHosts: Int? = null
         var duration: String? = null
         val highlights = linkedSetOf<String>()
+        val warnings = mutableListOf<String>()
         val findings = mutableListOf<PortFinding>()
         val observedHosts = linkedSetOf<String>()
 
@@ -135,6 +183,12 @@ object ToolResultParser {
         if (stderr.isNotBlank() && status != RunStatus.SUCCEEDED) {
             highlights += "stderr captured during failed execution"
         }
+        warnings += buildCaptureWarnings(
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = nmapXmlOutputTruncated,
+            xmlPreferred = true,
+        )
 
         val hostSummary = when {
             scannedHosts != null -> "$upHosts of $scannedHosts hosts up"
@@ -155,7 +209,9 @@ object ToolResultParser {
 
         return ToolResultSummary(
             overview = overview,
+            parseSource = ResultParseSource.HEURISTIC_TEXT,
             highlights = highlights.take(4),
+            warnings = warnings.take(4),
             portFindings = findings.take(24),
             observedHosts = observedHosts.take(24),
         )
@@ -166,6 +222,8 @@ object ToolResultParser {
         exitCode: Int?,
         xmlOutput: String,
         stderr: String,
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
     ): ToolResultSummary {
         val documentBuilderFactory = createSecureDocumentBuilderFactory()
         val documentBuilder = documentBuilderFactory.newDocumentBuilder()
@@ -174,6 +232,7 @@ object ToolResultParser {
         val findings = mutableListOf<PortFinding>()
         val observedHosts = linkedSetOf<String>()
         val highlights = linkedSetOf<String>()
+        val warnings = mutableListOf<String>()
         var upHosts = 0
 
         hostNodes.asElements().forEach { hostElement ->
@@ -231,6 +290,12 @@ object ToolResultParser {
         if (stderr.isNotBlank() && status != RunStatus.SUCCEEDED) {
             highlights += "stderr captured during failed execution"
         }
+        warnings += buildCaptureWarnings(
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = false,
+            xmlPreferred = false,
+        )
 
         val hostSummary = when {
             scannedHosts != null -> "$reportedUpHosts of $scannedHosts hosts up"
@@ -251,7 +316,9 @@ object ToolResultParser {
 
         return ToolResultSummary(
             overview = overview,
+            parseSource = ResultParseSource.STRUCTURED_NMAP_XML,
             highlights = highlights.take(5),
+            warnings = warnings.take(4),
             portFindings = findings.take(48),
             observedHosts = observedHosts.take(48),
         )
@@ -262,6 +329,8 @@ object ToolResultParser {
         exitCode: Int?,
         stdout: String,
         stderr: String,
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
     ): ToolResultSummary {
         val lines = stdout.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         var avgRtt: String? = null
@@ -287,6 +356,12 @@ object ToolResultParser {
         if (stderr.isNotBlank() && status != RunStatus.SUCCEEDED) {
             highlights += "stderr captured during failed execution"
         }
+        val warnings = buildCaptureWarnings(
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = false,
+            xmlPreferred = false,
+        )
 
         val overview = when (status) {
             RunStatus.SUCCEEDED -> packetSummary?.let { summary ->
@@ -299,7 +374,9 @@ object ToolResultParser {
 
         return ToolResultSummary(
             overview = overview,
+            parseSource = if (stdout.isBlank() && stderr.isBlank()) ResultParseSource.NONE else ResultParseSource.HEURISTIC_TEXT,
             highlights = highlights.take(4),
+            warnings = warnings.take(4),
         )
     }
 
@@ -308,6 +385,8 @@ object ToolResultParser {
         exitCode: Int?,
         stdout: String,
         stderr: String,
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
     ): ToolResultSummary {
         val combinedLines = sequenceOf(stdout, stderr)
             .flatMap { text -> text.lineSequence() }
@@ -324,6 +403,12 @@ object ToolResultParser {
 
         stdout.lineSequence().map(String::trim).firstOrNull(String::isNotEmpty)
             ?.let { firstOutput -> highlights += "Output: ${firstOutput.take(120)}" }
+        val warnings = buildCaptureWarnings(
+            stdoutTruncated = stdoutTruncated,
+            stderrTruncated = stderrTruncated,
+            nmapXmlOutputTruncated = false,
+            xmlPreferred = false,
+        )
 
         val overview = when (status) {
             RunStatus.SUCCEEDED -> if (combinedLines.isEmpty()) {
@@ -338,8 +423,33 @@ object ToolResultParser {
 
         return ToolResultSummary(
             overview = overview,
+            parseSource = if (combinedLines.isEmpty()) ResultParseSource.NONE else ResultParseSource.HEURISTIC_TEXT,
             highlights = highlights.distinct().take(4),
+            warnings = warnings.take(4),
         )
+    }
+
+    private fun buildCaptureWarnings(
+        stdoutTruncated: Boolean,
+        stderrTruncated: Boolean,
+        nmapXmlOutputTruncated: Boolean,
+        xmlPreferred: Boolean,
+    ): List<String> = buildList {
+        if (stdoutTruncated) {
+            add("Captured standard output was truncated; parsed findings may be incomplete.")
+        }
+        if (stderrTruncated) {
+            add("Captured standard error was truncated; failure details may be incomplete.")
+        }
+        if (nmapXmlOutputTruncated) {
+            add(
+                if (xmlPreferred) {
+                    "Structured Nmap XML exceeded the capture limit, so parsing fell back to normal text output."
+                } else {
+                    "Structured Nmap XML exceeded the capture limit and was omitted from the saved response."
+                },
+            )
+        }
     }
 
     private fun createSecureDocumentBuilderFactory(): DocumentBuilderFactory =

@@ -68,6 +68,11 @@ The format is intentionally simple and incremental so each agent session can app
 - Added **structured Nmap XML capture support** to the remote executor using executor-managed temporary output files.
 - Added **XML-first Nmap result parsing** in the shared contract layer, with secure XML parser configuration and stdout fallback when XML is unavailable.
 - Added Room schema support for persisting remote Nmap XML output across app restarts.
+- Added explicit stdout/stderr/XML truncation metadata to saved run history and remote execution responses.
+- Added parse-provenance reporting so history can distinguish structured Nmap XML parsing from heuristic text parsing.
+- Added profile and automation summaries for latest run outcome and saved schedule cadence.
+- Added richer run-detail cards for execution duration, observed-host counts, endpoint counts, and capture/parsing warnings.
+- Added automatic capability refresh after saving remote executor settings.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

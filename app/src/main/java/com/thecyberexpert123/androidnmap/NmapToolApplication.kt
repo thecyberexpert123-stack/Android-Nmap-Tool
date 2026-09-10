@@ -20,8 +20,10 @@ class NmapToolApplication : Application() {
             applicationContext,
             AppDatabase::class.java,
             "android-nmap-tool.db",
-        ).addMigrations(AppDatabase.MIGRATION_1_2)
-            .build()
+        ).addMigrations(
+            AppDatabase.MIGRATION_1_2,
+            AppDatabase.MIGRATION_2_3,
+        ).build()
 
         val remoteSettingsStore = RemoteSettingsStore(applicationContext)
         val repository = DefaultScanRepository(

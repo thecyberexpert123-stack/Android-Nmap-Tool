@@ -28,6 +28,7 @@ class ResultParsingTest {
         )
 
         assertEquals("1 of 1 hosts up, 3 open/open-filtered ports parsed", summary.overview)
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
         assertEquals(3, summary.portFindings.size)
         assertEquals(22, summary.portFindings.first().port)
         assertTrue(summary.observedHosts.any { it.contains("scanme.nmap.org") })
@@ -75,9 +76,36 @@ class ResultParsingTest {
         )
 
         assertEquals("1 of 1 hosts up, 2 open/open-filtered ports parsed", summary.overview)
+        assertEquals(ResultParseSource.STRUCTURED_NMAP_XML, summary.parseSource)
         assertEquals(listOf("scanme.nmap.org"), summary.observedHosts)
         assertEquals(2, summary.portFindings.size)
         assertTrue(summary.highlights.any { it.contains("structured Nmap XML") })
+    }
+
+    @Test
+    fun `nmap parser warns when structured xml is omitted because of capture limits`() {
+        val stdout = """
+            Nmap scan report for 192.168.1.10
+            Host is up.
+            PORT   STATE SERVICE
+            443/tcp open  https
+            Nmap done: 1 IP addresses (1 hosts up) scanned in 2.00 seconds
+        """.trimIndent()
+
+        val summary = ToolResultParser.parse(
+            tool = ToolType.NMAP,
+            status = RunStatus.SUCCEEDED,
+            exitCode = 0,
+            stdout = stdout,
+            stderr = "",
+            nmapXmlOutput = null,
+            stdoutTruncated = false,
+            stderrTruncated = false,
+            nmapXmlOutputTruncated = true,
+        )
+
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
+        assertTrue(summary.warnings.any { it.contains("fell back to normal text output") })
     }
 
     @Test
@@ -96,6 +124,7 @@ class ResultParsingTest {
         )
 
         assertEquals("Sent 5 (200B), received 5 (220B), lost 0 (0.00%), avg RTT 11.21ms", summary.overview)
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
         assertTrue(summary.highlights.any { it.contains("RTT min 10.30ms") })
     }
 
@@ -113,6 +142,7 @@ class ResultParsingTest {
         )
 
         assertEquals("Ncat completed with captured session output.", summary.overview)
+        assertEquals(ResultParseSource.HEURISTIC_TEXT, summary.parseSource)
         assertTrue(summary.highlights.any { it.contains("Connected to 192.168.0.10:443") })
     }
 }
