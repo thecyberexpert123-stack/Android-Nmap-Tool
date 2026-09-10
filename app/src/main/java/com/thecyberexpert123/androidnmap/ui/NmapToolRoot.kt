@@ -585,7 +585,7 @@ private fun StructuredNmapOptionsCard(
                 onCheckedChange = onDefaultScriptsChanged,
             )
             SettingSwitchRow(
-                title = "OS detection (-O)",
+                title = "OS detection (-O, inference locally)",
                 checked = state.enableOsDetection,
                 onCheckedChange = onOsDetectionChanged,
             )
@@ -952,7 +952,7 @@ private fun SettingsScreen(
     ) {
         Text(text = "Execution settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, while delegated execution remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving delegated-executor settings also re-checks backend capabilities when a base URL is configured.",
+            text = "Android-local mode now provides a real stock-Android baseline for socket-level probing, curated service identification, and evidence-based fingerprint inference, while delegated execution remains the honest path to broader/full Nmap functionality on modern non-root devices. The bearer token is stored encrypted with Android Keystore. Saving delegated-executor settings also re-checks backend capabilities when a base URL is configured.",
         )
         ExecutorCapabilityProfileCard(
             profile = localCapabilityState.executorProfile,
@@ -1376,7 +1376,7 @@ private fun formatCapabilityId(capability: ExecutionCapabilityDescriptor): Strin
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.UDP_APPLICATION_PROBES -> "UDP application probes"
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.PASSIVE_BANNER_CAPTURE -> "Passive banner capture"
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.CURATED_SERVICE_DETECTION -> "Curated service detection"
-    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.ANDROID_FINGERPRINT_INFERENCE -> "Android fingerprint inference"
+    com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.ANDROID_FINGERPRINT_INFERENCE -> "Android-local fingerprint inference"
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.RAW_PACKET_PROBES -> "Raw packet probes"
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.NMAP_OS_DETECTION -> "Nmap OS detection"
     com.thecyberexpert123.nmaptool.contract.ExecutionCapabilityId.NSE_SCRIPTS -> "NSE scripts"

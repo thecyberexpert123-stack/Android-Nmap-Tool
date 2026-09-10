@@ -97,6 +97,11 @@ The format is intentionally simple and incremental so each agent session can app
 - Added Android-local probes for HTTP, TLS/HTTPS, SSH, and banner-oriented protocols so local Nmap-style output can preserve useful service/detail lines in saved history.
 - Updated Android-local planning, guidance, and capability reporting so local `-sV` is exposed as a limited capability, bounded per run, and still prefers a delegated executor in AUTO mode when broader Nmap semantics are available.
 - Added shared test coverage for phase-B local `-sV` planning, executor capability mapping, delegated-preference routing, and parsing of Android-local service-detail lines.
+- Added Android-local phase-C fingerprint inference for bounded `-O` flows, producing evidence-based OS-family and device-type hints without claiming Nmap TCP/IP stack fingerprinting parity.
+- Added Android-local Nmap output lines for local device type, OS details, and fingerprint evidence so Phase C results propagate through saved history and parser highlights.
+- Updated Android-local planning, capability reporting, and UI wording so local `-O` is exposed as limited inference, not real raw-packet OS detection parity.
+- Added a shared execution-route selector and updated actual AUTO execution routing so delegated preference is now honored at run time when local execution is only a bounded fallback.
+- Added shared test coverage for phase-C local `-O` planning/guidance and heuristic parsing of Android-local fingerprint-inference lines.
 
 ### Verified Environment Facts
 - Confirmed the current sandbox does not have `java` installed, so Gradle builds/tests cannot be executed here.

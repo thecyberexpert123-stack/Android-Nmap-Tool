@@ -15,6 +15,7 @@ class ExecutorCapabilitiesTest {
             supportsTcpConnectScan = true,
             supportsUdpDatagramProbes = true,
             supportsServiceDetection = true,
+            supportsAndroidFingerprinting = true,
             maxTargetsPerRun = 16,
             maxPortsPerTarget = 256,
             maxTotalProbes = 1024,
@@ -31,6 +32,11 @@ class ExecutorCapabilitiesTest {
             it.id == ExecutionCapabilityId.CURATED_SERVICE_DETECTION &&
                 it.level == ExecutionCapabilityLevel.LIMITED &&
                 it.summary.contains("32 open TCP endpoints per run")
+        })
+        assertTrue(profile.capabilities.any {
+            it.id == ExecutionCapabilityId.ANDROID_FINGERPRINT_INFERENCE &&
+                it.level == ExecutionCapabilityLevel.LIMITED &&
+                it.summary.contains("not raw TCP/IP stack fingerprinting parity")
         })
         assertTrue(profile.capabilities.any {
             it.id == ExecutionCapabilityId.RAW_PACKET_PROBES && it.level == ExecutionCapabilityLevel.UNSUPPORTED

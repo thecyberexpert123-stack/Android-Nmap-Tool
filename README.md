@@ -43,6 +43,7 @@ Android app
         ├─ Android-local executor
         │    ├─ TCP connect scanning for bounded Nmap-compatible profiles
         │    ├─ curated service identification for selected Android-local `-sV` flows
+        │    ├─ evidence-based OS-family / device-type inference for selected Android-local `-O` flows
         │    ├─ single-target TCP session probing for bounded Ncat-style use
         │    └─ bounded TCP-connect / UDP datagram timing probes for Android-local Nping mode
         │
@@ -114,6 +115,7 @@ This project chooses correctness over false claims:
 - Real **Android-local transport execution** for stock, non-root devices:
   - bounded TCP connect scanning for local Nmap-compatible profiles
   - bounded curated service identification for selected local `-sV` Nmap-compatible profiles
+  - bounded evidence-based OS-family and device-type inference for selected local `-O` Nmap-compatible profiles
   - single-target TCP session probing for local Ncat-compatible profiles
   - bounded TCP-connect or UDP datagram timing probes for local Nping-compatible profiles
 - Profile creation and editing
@@ -139,6 +141,7 @@ This project chooses correctness over false claims:
 - Shared executor capability profiles for Android-local and delegated execution nodes, including feature matrices and execution limits
 - Delegated capability detail reporting for executor label plus detected `nmap` / `ncat` / `nping` version banners when available
 - Builder-side execution guidance that explains likely route, likely executor, blockers, warnings, and privileged-access caveats before a run is launched
+- Shared execution-route selection so builder guidance and actual AUTO dispatch use the same delegated-vs-local preference rules
 - Execution result persistence and history cards
 - Run-to-run **delta summaries** for the same profile to highlight status, route, exit-code, command, or output changes
 - Dashboard insight cards for:
@@ -161,10 +164,11 @@ This project chooses correctness over false claims:
 
 ### Explicit current limitation
 - The Android app now includes a **real Android-local execution baseline**, but it is intentionally limited to what stock non-root Android socket APIs can honestly do.
-- Android-local phase-B execution does **not** claim parity with raw-packet Nmap features such as SYN scan, OS detection parity, NSE/default scripts, or traceroute.
-- Android-local Nmap mode supports bounded TCP connect scanning and a curated `-sV` subset for selected protocols such as HTTP, TLS/HTTPS, SSH, and banner-oriented services.
+- Android-local phase-C execution does **not** claim parity with raw-packet Nmap features such as SYN scan, OS detection parity, NSE/default scripts, or traceroute.
+- Android-local Nmap mode supports bounded TCP connect scanning, a curated `-sV` subset for selected protocols such as HTTP, TLS/HTTPS, SSH, and banner-oriented services, plus evidence-based local `-O` inference for selected OS-family and device-type hints.
 - Android-local Nmap mode still requires an explicit TCP port strategy such as `-p`, `--top-ports`, or `-F`.
 - Android-local `-sV` is intentionally limited and bounded; it is not full Nmap version detection parity, and AUTO mode will still prefer a delegated executor when broader semantics are available.
+- Android-local `-O` is also intentionally limited: it produces evidence-based local inference rather than Nmap TCP/IP stack fingerprinting parity, and it benefits from `-sV` when more banner evidence is needed.
 - Android-local Ncat/Nping support is likewise bounded and intentionally conservative.
 - If you need broader/full Nmap behavior, configure a delegated executor such as the current remote Linux Nmap backend.
 
@@ -274,8 +278,8 @@ The app now derives lightweight summaries from captured tool output to make repe
 - **Nmap**:
   - prefers structured XML output when the delegated executor provides it,
   - falls back to heuristic stdout parsing when XML is unavailable,
-  - also parses the Android-local TCP connect report format, including curated local service-detail lines, into the same saved summary model,
-  - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, service/detail text, and completion duration.
+  - also parses the Android-local TCP connect report format, including curated local service-detail lines and local fingerprint-inference lines, into the same saved summary model,
+  - extracts host report lines, host-up indicators, open/open-filtered port entries, not-shown summaries, service/detail text, local device/OS inference highlights, and completion duration.
 - **Nping**: extracts packet send/receive/loss information and RTT min/avg/max lines when present.
 - **Ncat**: surfaces connection target and first output line when present.
 - Each parsed run now records whether the summary came from structured Nmap XML, heuristic text parsing, or no parseable captured content.
@@ -291,7 +295,7 @@ The app now derives lightweight summaries from captured tool output to make repe
 ### Important limitation
 - XML-based summaries are more reliable than heuristic stdout parsing, but they still depend on the delegated executor actually returning intact XML within capture limits.
 - The app now preserves truncation metadata and warns when saved outputs were incomplete, but truncation still reduces the fidelity of any parsed summary.
-- Android-local output is intentionally compatibility-oriented and conservative. Even when curated local service identification is present, it remains a bounded socket-level approximation rather than a claim of raw-packet or full Nmap version-detection parity.
+- Android-local output is intentionally compatibility-oriented and conservative. Even when curated local service identification or fingerprint inference is present, it remains a bounded socket-level approximation rather than a claim of raw-packet, full version-detection, or full TCP/IP stack fingerprinting parity.
 - Android-local UDP no-response results remain inherently inconclusive on stock Android because the app does not have full raw ICMP visibility.
 - Builder execution guidance is advisory. It improves honesty before execution, but it cannot prove that a given remote host, network path, or privilege-sensitive scan mode will succeed in every environment.
 - Exported Markdown/CSV reports and SAF/share artifacts reflect only the runs saved in local history; they are reporting artifacts, not a substitute for build/runtime verification or full raw upstream output retention.
@@ -311,14 +315,12 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 ## Roadmap
 
 ### Next milestones
-1. Android-local phase-C fingerprint inference
-   - evidence-based OS-family inference clearly labeled as Android-local inference rather than Nmap `-O`
-2. delegated LAN-agent support
+1. delegated LAN-agent support
    - executor-node registration, capability reporting, and private-topology-aware routing for user-controlled LAN agents
-3. richer Nmap result modeling using structured output formats where feasible
-4. optional authenticated multi-user delegated-executor governance beyond the current single-token deployment model
-5. deeper delegated-executor observability such as richer backend metrics/retention controls around audit logs
-6. executor-policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
+2. richer Nmap result modeling using structured output formats where feasible
+3. optional authenticated multi-user delegated-executor governance beyond the current single-token deployment model
+4. deeper delegated-executor observability such as richer backend metrics/retention controls around audit logs
+5. executor-policy UX refinement across Android-local, LAN-agent, and remote-Nmap routes
 
 ## Verification status
 
@@ -331,6 +333,6 @@ That policy exists to preserve operator safety and host integrity in a mobile-co
 ### Not verified in this repository session
 - Android compilation
 - emulator/device runtime behavior
-- remote executor runtime behavior
+- delegated executor runtime behavior
 
 The current sandbox does not have Java installed, so build execution could not be performed here. No test or build success is claimed beyond the source changes present in the repository.

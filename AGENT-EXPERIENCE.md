@@ -146,6 +146,41 @@ This document records development observations, constraints, trade-offs, and lea
 - For a distributed scanning product, route preference is not just about whether a task can run somewhere; it is also about which route best matches operator intent.
 - Small, well-bounded protocol detectors are more trustworthy than broad claims of parity that the platform cannot honestly deliver.
 
+## 2026-09-10 — Android-local Phase C fingerprint inference
+
+### Why this batch mattered
+- After phase-B local service identification, the next real functional gap was the `-O` toggle in the builder: it still implied a capability that Android-local execution could not honor honestly.
+- The right fix was not to imitate Nmap TCP/IP fingerprinting. It was to add a clearly limited **evidence-based local inference** layer and make actual AUTO execution routing respect delegated preference when local support is only a fallback.
+
+### What changed conceptually
+- I separated **Android-local fingerprint inference** from real Nmap OS detection parity.
+- In practice, that means local `-O` now stands for: "attempt a bounded, evidence-based family/device guess from socket-visible signals" rather than "perform raw-packet TCP/IP stack fingerprinting."
+- I also fixed an architectural honesty bug: builder guidance already knew some profiles should prefer a delegated executor, but actual AUTO execution still picked local whenever local execution was merely possible. That mismatch is now removed.
+
+### Implementation notes
+- The local inferencer intentionally uses only evidence we can obtain honestly from stock Android execution:
+  - open-port combinations
+  - curated service names
+  - service banners already captured during local `-sV`
+  - HTTP/TLS metadata already observed during bounded local probing
+- I kept the heuristic families broad on purpose:
+  - Windows-family
+  - Linux/Unix-family
+  - Apple/Darwin-family
+  - Android/Linux-family
+  - embedded/network-appliance family
+- The inferencer now emits Nmap-like but clearly labeled lines such as device type, OS details, and fingerprint evidence so saved-history parsing can surface the result without inventing a parallel report format.
+
+### Trade-offs and constraints
+- Local fingerprint inference is intentionally conservative. When evidence is weak or mixed, it now says so instead of fabricating a guess.
+- The scoring model is simple and explainable, not exhaustive. That is preferable at this stage because overclaiming fingerprint accuracy would be worse than missing some opportunities.
+- Adding the shared route selector was worthwhile because execution truth should not diverge between UI guidance and actual run dispatch.
+
+### Lessons reinforced
+- Once a product claims capability-aware routing, the runtime dispatcher must share the same decision logic as the UI planner or trust quickly erodes.
+- Evidence-based inference is much safer to ship than faux parity when the underlying platform cannot expose the packet-level data that the upstream tool really depends on.
+- Reusing the existing text-report pipeline is valuable, but only when the inserted lines remain explicit about their origin and confidence.
+
 ### Lessons so far
 - On greenfield security-tooling apps, the hardest early problem is not UI; it is aligning platform constraints, licensing, and user expectations before implementation.
 - Honest capability modeling is essential. A trustworthy security tool must clearly distinguish what it can actually run from what it can only plan or simulate.

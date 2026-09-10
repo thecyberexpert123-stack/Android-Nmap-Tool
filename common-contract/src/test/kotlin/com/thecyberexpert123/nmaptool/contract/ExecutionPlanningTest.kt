@@ -6,27 +6,50 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ExecutionPlanningTest {
+    @Test
+    fun `execution route advisor prefers delegated route for auto when local support is bounded`() {
+        assertEquals(
+            ExecutionRoute.REMOTE,
+            ExecutionRouteAdvisor.select(
+                executionPreference = ExecutionPreference.AUTO,
+                remoteConfigured = true,
+                localSupported = true,
+                preferDelegatedWhenAvailable = true,
+            ),
+        )
+        assertEquals(
+            ExecutionRoute.LOCAL,
+            ExecutionRouteAdvisor.select(
+                executionPreference = ExecutionPreference.AUTO,
+                remoteConfigured = false,
+                localSupported = true,
+                preferDelegatedWhenAvailable = true,
+            ),
+        )
+    }
+
     private val localCapabilities = AndroidLocalCapabilities(
         available = true,
         networkAvailable = true,
         activeNetworkSummary = "Wi-Fi — validated internet",
         supportsServiceDetection = true,
+        supportsAndroidFingerprinting = true,
         maxServiceDetectionsPerRun = 32,
     )
 
     @Test
-    fun `auto mode recommends delegated execution when local service detection is only a bounded fallback`() {
+    fun `auto mode recommends delegated execution when local service and fingerprint features are only bounded local fallbacks`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NMAP,
             targets = listOf("scanme.nmap.org"),
             executionPreference = ExecutionPreference.AUTO,
-            arguments = listOf("-Pn", "-sV"),
+            arguments = listOf("-Pn", "-sV", "-O", "-F"),
             remoteConfigured = true,
             remoteCapabilities = RemoteCapabilitiesResponse(
                 nmapAvailable = true,
                 ncatAvailable = true,
                 npingAvailable = true,
-                privileged = false,
+                privileged = true,
                 requiresAuthentication = true,
                 maxTargetsPerRequest = 64,
                 maxArgumentsPerRequest = 128,
@@ -53,12 +76,12 @@ class ExecutionPlanningTest {
     }
 
     @Test
-    fun `auto mode keeps bounded local service detection when no delegated executor exists`() {
+    fun `auto mode keeps bounded local service detection and fingerprint inference when no delegated executor exists`() {
         val guidance = ExecutionGuidanceAdvisor.analyze(
             tool = ToolType.NMAP,
             targets = listOf("scanme.nmap.org"),
             executionPreference = ExecutionPreference.AUTO,
-            arguments = listOf("-Pn", "-sV", "-F"),
+            arguments = listOf("-Pn", "-sV", "-O", "-F"),
             remoteConfigured = false,
             remoteCapabilities = null,
             remoteCapabilitiesStale = false,
@@ -70,6 +93,8 @@ class ExecutionPlanningTest {
         assertEquals(ExecutionRoute.LOCAL, guidance.likelyRoute)
         assertEquals("Android local executor", guidance.likelyExecutorTitle)
         assertTrue(guidance.warnings.any { it.contains("not full Nmap version-detection parity") })
+        assertTrue(guidance.warnings.any { it.contains("not Nmap TCP/IP stack fingerprinting parity") })
+        assertTrue(guidance.notes.any { it.contains("phase-C baseline") })
     }
 
     @Test
@@ -112,7 +137,7 @@ class ExecutionPlanningTest {
         assertEquals("Android local executor", guidance.likelyExecutorTitle)
         assertTrue(guidance.summary.contains("run locally"))
         assertTrue(guidance.warnings.any { it.contains("curated fast TCP port catalog") })
-        assertTrue(guidance.notes.any { it.contains("phase-B baseline") })
+        assertTrue(guidance.notes.any { it.contains("phase-C baseline") })
     }
 
     @Test

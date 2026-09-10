@@ -8,6 +8,7 @@ import com.thecyberexpert123.nmaptool.contract.AndroidLocalCapabilities
 import com.thecyberexpert123.nmaptool.contract.CommandPreview
 import com.thecyberexpert123.nmaptool.contract.ExecutionPreference
 import com.thecyberexpert123.nmaptool.contract.ExecutionRoute
+import com.thecyberexpert123.nmaptool.contract.ExecutionRouteAdvisor
 import com.thecyberexpert123.nmaptool.contract.InvocationFactory
 import com.thecyberexpert123.nmaptool.contract.PortFinding
 import com.thecyberexpert123.nmaptool.contract.RemoteCapabilitiesResponse
@@ -286,7 +287,7 @@ class DefaultScanRepository(
 
     suspend fun fetchRemoteCapabilities(settings: RemoteEndpointSettings = remoteSettingsStore.read()): Result<RemoteCapabilitiesResponse> {
         if (settings.baseUrl.isBlank()) {
-            return Result.failure(IllegalStateException("Set a remote executor base URL before requesting capabilities."))
+            return Result.failure(IllegalStateException("Set a delegated executor base URL before requesting capabilities."))
         }
         return remoteExecutorClient.fetchCapabilities(settings)
     }
@@ -330,32 +331,28 @@ class DefaultScanRepository(
             val request = validation.value!!.request
             val localDecision = localToolExecutor.inspect(request)
             val remoteSettings = remoteSettingsStore.read()
-            when (request.executionPreference) {
-                ExecutionPreference.LOCAL_ONLY -> localToolExecutor.execute(request)
-                ExecutionPreference.REMOTE_ONLY -> {
-                    if (remoteSettings.baseUrl.isBlank()) {
-                        buildFailureResponse(
-                            route = ExecutionRoute.BLOCKED,
-                            commandPreview = validation.value.commandPreview,
-                            message = "Remote execution was requested, but no remote base URL is configured.",
-                        )
-                    } else {
-                        remoteExecutorClient.execute(remoteSettings, request)
-                    }
-                }
+            val selectedRoute = ExecutionRouteAdvisor.select(
+                executionPreference = request.executionPreference,
+                remoteConfigured = remoteSettings.baseUrl.isNotBlank(),
+                localSupported = localDecision.canExecute,
+                preferDelegatedWhenAvailable = localDecision.preferDelegatedWhenAvailable,
+            )
+            when (selectedRoute) {
+                ExecutionRoute.LOCAL -> localToolExecutor.execute(request)
+                ExecutionRoute.REMOTE -> remoteExecutorClient.execute(remoteSettings, request)
+                ExecutionRoute.BLOCKED, null -> when (request.executionPreference) {
+                    ExecutionPreference.REMOTE_ONLY -> buildFailureResponse(
+                        route = ExecutionRoute.BLOCKED,
+                        commandPreview = validation.value.commandPreview,
+                        message = "Delegated execution was requested, but no delegated executor base URL is configured.",
+                    )
 
-                ExecutionPreference.AUTO -> {
-                    if (localDecision.canExecute) {
-                        localToolExecutor.execute(request)
-                    } else if (remoteSettings.baseUrl.isNotBlank()) {
-                        remoteExecutorClient.execute(remoteSettings, request)
-                    } else {
-                        buildFailureResponse(
-                            route = ExecutionRoute.BLOCKED,
-                            commandPreview = validation.value.commandPreview,
-                            message = localDecision.reason,
-                        )
-                    }
+                    ExecutionPreference.LOCAL_ONLY,
+                    ExecutionPreference.AUTO -> buildFailureResponse(
+                        route = ExecutionRoute.BLOCKED,
+                        commandPreview = validation.value.commandPreview,
+                        message = localDecision.reason,
+                    )
                 }
             }
         }

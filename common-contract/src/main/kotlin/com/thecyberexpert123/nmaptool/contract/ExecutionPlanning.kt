@@ -40,6 +40,24 @@ data class ExecutionGuidance(
     val notes: List<String> = emptyList(),
 )
 
+object ExecutionRouteAdvisor {
+    fun select(
+        executionPreference: ExecutionPreference,
+        remoteConfigured: Boolean,
+        localSupported: Boolean,
+        preferDelegatedWhenAvailable: Boolean = false,
+    ): ExecutionRoute? = when (executionPreference) {
+        ExecutionPreference.LOCAL_ONLY -> if (localSupported) ExecutionRoute.LOCAL else null
+        ExecutionPreference.REMOTE_ONLY -> if (remoteConfigured) ExecutionRoute.REMOTE else null
+        ExecutionPreference.AUTO -> when {
+            localSupported && !(preferDelegatedWhenAvailable && remoteConfigured) -> ExecutionRoute.LOCAL
+            remoteConfigured -> ExecutionRoute.REMOTE
+            localSupported -> ExecutionRoute.LOCAL
+            else -> null
+        }
+    }
+}
+
 object ExecutionGuidanceAdvisor {
     fun analyze(
         tool: ToolType,
@@ -91,16 +109,12 @@ object ExecutionGuidanceAdvisor {
             notes += "Scheduled scans still depend on WorkManager timing, notification, and network constraints on Android."
         }
 
-        val likelyRoute = when (executionPreference) {
-            ExecutionPreference.LOCAL_ONLY -> if (localAssessment.supported) ExecutionRoute.LOCAL else null
-            ExecutionPreference.REMOTE_ONLY -> if (remoteConfigured) ExecutionRoute.REMOTE else null
-            ExecutionPreference.AUTO -> when {
-                localAssessment.supported && !(localAssessment.preferDelegatedWhenAvailable && remoteConfigured) -> ExecutionRoute.LOCAL
-                remoteConfigured -> ExecutionRoute.REMOTE
-                localAssessment.supported -> ExecutionRoute.LOCAL
-                else -> null
-            }
-        }
+        val likelyRoute = ExecutionRouteAdvisor.select(
+            executionPreference = executionPreference,
+            remoteConfigured = remoteConfigured,
+            localSupported = localAssessment.supported,
+            preferDelegatedWhenAvailable = localAssessment.preferDelegatedWhenAvailable,
+        )
         val likelyExecutorTitle = when (likelyRoute) {
             ExecutionRoute.LOCAL -> localCapabilities.toExecutorCapabilityProfile().label
             ExecutionRoute.REMOTE -> remoteCapabilities?.executorProfile?.label

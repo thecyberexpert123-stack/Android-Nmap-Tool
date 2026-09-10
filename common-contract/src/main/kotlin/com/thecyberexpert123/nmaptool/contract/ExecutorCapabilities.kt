@@ -116,9 +116,9 @@ fun AndroidLocalCapabilities.toExecutorCapabilityProfile(
         ),
         ExecutionCapabilityDescriptor(
             id = ExecutionCapabilityId.ANDROID_FINGERPRINT_INFERENCE,
-            level = if (supportsAndroidFingerprinting) ExecutionCapabilityLevel.LIMITED else ExecutionCapabilityLevel.UNSUPPORTED,
+            level = if (supportsAndroidFingerprinting && networkAvailable) ExecutionCapabilityLevel.LIMITED else ExecutionCapabilityLevel.UNSUPPORTED,
             summary = if (supportsAndroidFingerprinting) {
-                "Evidence-based Android-local fingerprint inference is enabled."
+                "Evidence-based Android-local fingerprint inference is enabled for selected OS-family and device-type hints; it is not raw TCP/IP stack fingerprinting parity."
             } else {
                 "Android-local fingerprint inference is not implemented yet."
             },
@@ -197,7 +197,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 summary = if (ncatAvailable) {
                     "Ncat is available for delegated TCP session and banner-oriented probing."
                 } else {
-                    "Ncat is not currently available on this remote executor."
+                    "Ncat is not currently available on this delegated executor."
                 },
             ),
             ExecutionCapabilityDescriptor(
@@ -206,7 +206,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 summary = if (nmapAvailable) {
                     "Nmap-backed service detection can run remotely when allowed by host privileges and policy."
                 } else {
-                    "Nmap is not currently available on this remote executor."
+                    "Nmap is not currently available on this delegated executor."
                 },
             ),
             ExecutionCapabilityDescriptor(
@@ -227,7 +227,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 id = ExecutionCapabilityId.NMAP_OS_DETECTION,
                 level = if (nmapAvailable && privileged) ExecutionCapabilityLevel.SUPPORTED else if (nmapAvailable) ExecutionCapabilityLevel.LIMITED else ExecutionCapabilityLevel.UNSUPPORTED,
                 summary = when {
-                    !nmapAvailable -> "Nmap is not currently available on this remote executor."
+                    !nmapAvailable -> "Nmap is not currently available on this delegated executor."
                     privileged -> "Remote Nmap OS detection is supported when the target path and host privileges allow it."
                     else -> "Remote Nmap OS detection is tool-available but privilege-sensitive on this host."
                 },
@@ -238,7 +238,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 summary = if (nmapAvailable) {
                     "Remote Nmap supports script-capable execution subject to the executor's safety policy."
                 } else {
-                    "Nmap is not currently available on this remote executor."
+                    "Nmap is not currently available on this delegated executor."
                 },
             ),
             ExecutionCapabilityDescriptor(
@@ -247,7 +247,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 summary = if (nmapAvailable) {
                     "Traceroute can be delegated remotely, but results still depend on topology and host/network privileges."
                 } else {
-                    "Nmap is not currently available on this remote executor."
+                    "Nmap is not currently available on this delegated executor."
                 },
             ),
             ExecutionCapabilityDescriptor(
@@ -256,7 +256,7 @@ fun RemoteCapabilitiesResponse.toExecutorCapabilityProfile(
                 summary = if (supportsStructuredNmapXml) {
                     "Structured Nmap XML capture is available for higher-fidelity result parsing."
                 } else {
-                    "Structured Nmap XML capture is not available from this remote executor."
+                    "Structured Nmap XML capture is not available from this delegated executor."
                 },
             ),
             ExecutionCapabilityDescriptor(

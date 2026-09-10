@@ -23,6 +23,7 @@ private const val REMOTE_EXECUTE_PATH = "/api/v1/execute"
 data class LocalExecutionDecision(
     val canExecute: Boolean,
     val reason: String,
+    val preferDelegatedWhenAvailable: Boolean = false,
     val blockers: List<String> = emptyList(),
     val warnings: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
@@ -210,7 +211,7 @@ class RemoteExecutorClient(
         } catch (_: SerializationException) {
             DecodedApiError(
                 message = if (body.isBlank()) {
-                    "HTTP $code: no error body returned by remote executor."
+                    "HTTP $code: no error body returned by delegated executor."
                 } else {
                     "HTTP $code: $body"
                 },

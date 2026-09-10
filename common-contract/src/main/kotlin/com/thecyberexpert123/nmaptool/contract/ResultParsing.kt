@@ -13,6 +13,9 @@ private val nmapPortRegex =
     Regex("^(\\d+)/(tcp|udp|sctp)\\s+(open(?:\\|filtered)?|closed(?:\\|filtered)?|filtered|unfiltered)\\s+(\\S+)(?:\\s+(.*))?$")
 private val nmapDoneRegex = Regex("^Nmap done: (\\d+) IP addresses \\((\\d+) hosts up\\) scanned in (.+)$")
 private val nmapNotShownRegex = Regex("^Not shown: (.+)$")
+private val nmapDeviceTypeRegex = Regex("^Device type: (.+)$")
+private val nmapOsDetailsRegex = Regex("^OS details: (.+)$")
+private val nmapOsEvidenceRegex = Regex("^OS fingerprint evidence: (.+)$")
 private val npingRttRegex = Regex("^Max rtt: (.+) \\| Min rtt: (.+) \\| Avg rtt: (.+)$", RegexOption.IGNORE_CASE)
 private val npingPacketsRegex = Regex("^Raw packets sent: (.+) \\| Rcvd: (.+) \\| Lost: (.+)$", RegexOption.IGNORE_CASE)
 private val ncatConnectedRegex = Regex("^(?:Ncat: )?Connected to (.+)$", RegexOption.IGNORE_CASE)
@@ -170,6 +173,24 @@ object ToolResultParser {
                     )
                 }
 
+                nmapDeviceTypeRegex.matches(line) -> {
+                    nmapDeviceTypeRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { deviceType ->
+                        highlights += "Device type: $deviceType"
+                    }
+                }
+
+                nmapOsDetailsRegex.matches(line) -> {
+                    nmapOsDetailsRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { osDetails ->
+                        highlights += "OS details: $osDetails"
+                    }
+                }
+
+                nmapOsEvidenceRegex.matches(line) -> {
+                    nmapOsEvidenceRegex.matchEntire(line)?.groupValues?.get(1)?.takeIf(String::isNotBlank)?.let { evidence ->
+                        highlights += "OS fingerprint evidence: $evidence"
+                    }
+                }
+
                 nmapDoneRegex.matches(line) -> {
                     val match = nmapDoneRegex.matchEntire(line) ?: return@forEach
                     scannedHosts = match.groupValues[1].toIntOrNull()
@@ -210,7 +231,7 @@ object ToolResultParser {
         return ToolResultSummary(
             overview = overview,
             parseSource = ResultParseSource.HEURISTIC_TEXT,
-            highlights = highlights.take(4),
+            highlights = highlights.take(6),
             warnings = warnings.take(4),
             portFindings = findings.take(24),
             observedHosts = observedHosts.take(24),

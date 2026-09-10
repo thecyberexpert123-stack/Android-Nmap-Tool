@@ -73,10 +73,12 @@ private val commonServiceNames = mapOf(
     5060 to "sip",
     5061 to "sips",
     5432 to "postgresql",
+    5555 to "adb",
     5601 to "kibana",
     5672 to "amqp",
     5900 to "vnc",
     5984 to "couchdb",
+    62078 to "iphone-sync",
     6379 to "redis",
     6443 to "https-alt",
     7001 to "weblogic",
@@ -110,6 +112,7 @@ class AndroidLocalToolExecutor(
             networkAvailable = activeNetwork != null,
             activeNetworkSummary = activeNetwork?.let(::describeNetworkSummary) ?: "No active default network",
             supportsServiceDetection = connectivityManager != null,
+            supportsAndroidFingerprinting = connectivityManager != null,
         )
     }
 
@@ -123,6 +126,7 @@ class AndroidLocalToolExecutor(
         return LocalExecutionDecision(
             canExecute = assessment.supported,
             reason = assessment.summary,
+            preferDelegatedWhenAvailable = assessment.preferDelegatedWhenAvailable,
             blockers = assessment.blockers,
             warnings = assessment.warnings,
             notes = assessment.notes,
@@ -172,6 +176,8 @@ class AndroidLocalToolExecutor(
             val openPorts = targetResults.sumOf { result -> result.openPorts.size }
             val serviceDetectionsPerformed = targetResults.sumOf { it.serviceDetectionsPerformed }
             val serviceDetectionsSkipped = targetResults.sumOf { it.serviceDetectionsSkipped }
+            val fingerprintEvaluationsPerformed = targetResults.count { it.fingerprintInference != null }
+            val fingerprintGuessesProduced = targetResults.count { it.fingerprintInference?.familyGuessed == true }
             val stdout = buildString {
                 targetResults.forEach { result ->
                     appendLine("Nmap scan report for ${result.target}")
@@ -196,6 +202,15 @@ class AndroidLocalToolExecutor(
                                         }
                                     },
                                 )
+                            }
+                        }
+                        result.fingerprintInference?.let { inference ->
+                            inference.deviceType?.takeIf(String::isNotBlank)?.let { deviceType ->
+                                appendLine("Device type: $deviceType")
+                            }
+                            appendLine("OS details: ${inference.osDetails}")
+                            if (inference.evidence.isNotEmpty()) {
+                                appendLine("OS fingerprint evidence: ${inference.evidence.joinToString(separator = "; ")}")
                             }
                         }
                         if (result.closedPortCount > 0) {
@@ -235,6 +250,11 @@ class AndroidLocalToolExecutor(
                         add("Open endpoints left with port-based naming after the per-run service-detection limit: $serviceDetectionsSkipped")
                     }
                 }
+                if (plan.enableFingerprintInference) {
+                    add("Android-local -O performed evidence-based OS-family inference rather than Nmap TCP/IP stack fingerprinting.")
+                    add("Android-local fingerprint evaluations attempted across targets: $fingerprintEvaluationsPerformed")
+                    add("Android-local fingerprint guesses produced: $fingerprintGuessesProduced")
+                }
                 targetResults.forEach { result ->
                     addAll(result.warnings)
                     result.error?.let(::add)
@@ -256,6 +276,9 @@ class AndroidLocalToolExecutor(
                     append("Open TCP ports found: $openPorts. ")
                     if (plan.enableServiceDetection) {
                         append("Curated service identification attempted on $serviceDetectionsPerformed open endpoint(s). ")
+                    }
+                    if (plan.enableFingerprintInference) {
+                        append("Evidence-based fingerprint inference evaluated $fingerprintEvaluationsPerformed target(s) and produced $fingerprintGuessesProduced OS-family guess(es). ")
                     }
                     append("This result reflects socket-level probing only; raw-packet Nmap features remain delegated-only.")
                     if (attemptedTargets == 0) {
@@ -492,6 +515,19 @@ class AndroidLocalToolExecutor(
                 rttMillis = portSample.rttMillis,
             )
         }
+        val fingerprintInference = if (plan.enableFingerprintInference) {
+            AndroidLocalFingerprintInferencer.infer(
+                openPorts.map { portResult ->
+                    AndroidLocalPortObservation(
+                        port = portResult.port,
+                        service = portResult.service,
+                        details = portResult.details,
+                    )
+                },
+            )
+        } else {
+            null
+        }
         return LocalTargetScanResult(
             target = target,
             attempted = true,
@@ -500,9 +536,15 @@ class AndroidLocalToolExecutor(
             closedPortCount = portResults.count { it.outcome == ProbeOutcome.CLOSED },
             filteredPortCount = portResults.count { it.outcome == ProbeOutcome.TIMEOUT },
             bestLatencyMillis = portResults.mapNotNull { it.rttMillis }.minOrNull(),
-            warnings = serviceDetection?.warnings.orEmpty(),
+            warnings = buildList {
+                addAll(serviceDetection?.warnings.orEmpty())
+                if (fingerprintInference != null && !fingerprintInference.familyGuessed) {
+                    add("Android-local fingerprint inference remained inconclusive for $target.")
+                }
+            },
             serviceDetectionsPerformed = serviceDetection?.attemptedCount ?: 0,
             serviceDetectionsSkipped = serviceDetection?.skippedCount ?: 0,
+            fingerprintInference = fingerprintInference,
             error = null,
         )
     }
@@ -688,6 +730,7 @@ class AndroidLocalToolExecutor(
         val warnings: List<String> = emptyList(),
         val serviceDetectionsPerformed: Int = 0,
         val serviceDetectionsSkipped: Int = 0,
+        val fingerprintInference: AndroidLocalFingerprintInference? = null,
         val error: String?,
     )
 
